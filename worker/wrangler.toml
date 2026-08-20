@@ -8,7 +8,7 @@ compatibility_date = "2024-09-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "tolid-markazi-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "11bc5013-36c8-4c41-9cd1-c68f7f90f0d3"
 
 # توجه: به‌جای Cloudflare R2 (که در برخی مناطق در دسترس نیست)، فایل‌ها روی یک
 # ریپازیتوری جداگانه در GitHub ذخیره می‌شوند. این مقادیر را با Add variable/Secret
