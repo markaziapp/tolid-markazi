@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>پنل کارخانه | بازار صنعتی استان مرکزی</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+(function(){ var s=document.createElement('script'); s.src='assets/config.js'; document.head.appendChild(s); })();
+</script>
+</head>
+<body>
+<header class="topbar">
+    <div class="container">
+        <div class="brand">🏭 پنل <span>کارخانه</span></div>
+        <a href="index.html" class="btn btn-outline btn-sm" style="background:transparent;color:#fff;border-color:rgba(255,255,255,0.4);">بازگشت به سایت</a>
+    </div>
+</header>
+
+<main class="narrow" style="padding:1.5rem 1rem;">
+
+    <!-- ورود / ثبت‌نام -->
+    <section id="authBox">
+        <div style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+            <button class="tab-btn active" id="loginTabBtn" onclick="showAuthForm('login')" style="flex:1;">ورود</button>
+            <button class="tab-btn" id="registerTabBtn" onclick="showAuthForm('register')" style="flex:1;">ثبت واحد جدید</button>
+        </div>
+
+        <div class="card" id="loginForm" style="padding:1.2rem;">
+            <div class="form-group"><label>شماره تماس</label><input type="tel" id="loginPhone" placeholder="09xxxxxxxxx"></div>
+            <div class="form-group"><label>رمز عبور</label><input type="password" id="loginPassword"></div>
+            <button class="btn btn-primary" style="width:100%;" onclick="doLogin()">ورود به پنل</button>
+        </div>
+
+        <div class="card" id="registerForm" style="padding:1.2rem; display:none;">
+            <div class="form-group"><label>نام واحد تولیدی *</label><input type="text" id="regName"></div>
+            <div class="form-group"><label>شماره تماس *</label><input type="tel" id="regPhone" placeholder="09xxxxxxxxx"></div>
+            <div class="form-group"><label>رمز عبور *</label><input type="password" id="regPassword"></div>
+            <div class="form-group"><label>شهرستان</label><select id="regCounty"></select></div>
+            <div class="form-group"><label>دسته‌بندی</label><select id="regCategory"></select></div>
+            <div class="form-group"><label>محصولات</label><input type="text" id="regProducts"></div>
+            <div class="form-group"><label>ظرفیت تولید</label><input type="text" id="regCapacity"></div>
+            <div class="form-group">
+                <label>لوگو (اختیاری)</label>
+                <label class="file-upload" id="regLogoLabel" for="regLogo">📷 برای انتخاب تصویر کلیک کنید</label>
+                <input type="file" id="regLogo" accept="image/*" style="display:none" onchange="uploadPreview(this,'regLogoLabel','📷')">
+            </div>
+            <div class="form-group">
+                <label>تصویر مجوز فعالیت (برای تأیید سریع‌تر)</label>
+                <label class="file-upload" id="regLicenseLabel" for="regLicense">📄 برای آپلود مجوز کلیک کنید</label>
+                <input type="file" id="regLicense" accept="image/*,.pdf" style="display:none" onchange="uploadPreview(this,'regLicenseLabel','📄')">
+            </div>
+            <button class="btn btn-gold" style="width:100%;" onclick="doRegister()">ثبت‌نام</button>
+        </div>
+    </section>
+
+    <!-- داشبورد -->
+    <section id="dashboardBox" style="display:none;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+            <h2 id="dashCompanyName" style="color:var(--primary);"></h2>
+            <button class="btn btn-outline btn-sm" onclick="logout()">خروج</button>
+        </div>
+        <div id="verifyNotice"></div>
+
+        <div class="stat-cards" id="statCards"></div>
+
+        <canvas id="viewsChart" height="140" style="margin:1rem 0;"></canvas>
+
+        <h3 class="section-title" style="font-size:1.1rem;">ویرایش مشخصات واحد</h3>
+        <div class="card" style="padding:1rem;">
+            <div class="form-group"><label>نام واحد</label><input type="text" id="editName"></div>
+            <div class="form-group"><label>محصولات</label><input type="text" id="editProducts"></div>
+            <div class="form-group"><label>ظرفیت تولید</label><input type="text" id="editCapacity"></div>
+            <button class="btn btn-primary" style="width:100%;" onclick="saveProfileEdit()">ارسال برای تایید</button>
+            <p style="font-size:0.75rem; color:var(--text-light); margin-top:0.5rem;">تغییرات پس از تایید مدیر روی سایت اعمال می‌شود.</p>
+        </div>
+
+        <h3 class="section-title" style="font-size:1.1rem;">پرزنت واحد تولیدی / محصول</h3>
+        <div class="card" style="padding:1rem;">
+            <div class="form-group"><label>لینک ویدیو (آپارات/یوتیوب) یا آدرس فایل</label><input type="text" id="presentationUrl" placeholder="https://..."></div>
+            <div class="form-group"><label>نوع</label><select id="presentationType"><option value="video_link">لینک ویدیو</option><option value="file">فایل</option></select></div>
+            <button class="btn btn-outline" style="width:100%;" onclick="submitPresentation()">ارسال برای تایید مدیر</button>
+            <p style="font-size:0.75rem; color:var(--text-light); margin-top:0.5rem;" id="presentationStatus"></p>
+        </div>
+    </section>
+</main>
+
+<div class="toast" id="toast"></div>
+<script src="assets/company.js"></script>
+</body>
+</html>

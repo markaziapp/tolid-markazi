@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>بازار صنعتی استان مرکزی</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="assets/styles.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+(function(){ var s=document.createElement('script'); s.src='assets/config.js'; document.head.appendChild(s); })();
+</script>
+</head>
+<body>
+
+<!-- این صفحه عمداً ظاهر خنثی دارد؛ روی آرم زیر ۵ بار پشت‌سرهم کلیک کنید -->
+<div id="gate" style="min-height:70vh; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:0.5rem;">
+    <div id="gateLogo" style="font-size:2.5rem; cursor:default; user-select:none;">🏭</div>
+    <div style="color:var(--text-light); font-size:0.85rem;">بازار صنعتی استان مرکزی</div>
+</div>
+
+<!-- فرم ورود مدیر (تا فعال نشدن، در DOM هست ولی مخفی است) -->
+<div class="narrow" id="loginWrap" style="display:none; padding-top:3rem;">
+    <div class="card" style="padding:1.2rem;">
+        <h3 style="margin-bottom:1rem; text-align:center;">ورود مدیر</h3>
+        <div class="form-group"><label>نام کاربری</label><input type="text" id="adminUsername"></div>
+        <div class="form-group"><label>رمز عبور</label><input type="password" id="adminPassword"></div>
+        <button class="btn btn-primary" style="width:100%;" onclick="adminLogin()">ورود</button>
+    </div>
+</div>
+
+<!-- پنل مدیریت -->
+<div id="adminPanel" style="display:none;">
+<header class="topbar">
+    <div class="container">
+        <div class="brand">⚙️ پنل <span>مدیریت</span></div>
+        <button class="btn btn-outline btn-sm" style="background:transparent;color:#fff;border-color:rgba(255,255,255,0.4);" onclick="adminLogout()">خروج</button>
+    </div>
+</header>
+<nav class="tabs container" id="adminTabs">
+    <button class="tab-btn active" data-tab="overview" onclick="switchAdminTab('overview')">آمار کلی</button>
+    <button class="tab-btn" data-tab="pending" onclick="switchAdminTab('pending')">در انتظار تایید</button>
+    <button class="tab-btn" data-tab="companies" onclick="switchAdminTab('companies')">واحدها</button>
+    <button class="tab-btn" data-tab="offers" onclick="switchAdminTab('offers')">عرضه‌ها</button>
+    <button class="tab-btn" data-tab="requests" onclick="switchAdminTab('requests')">درخواست‌ها</button>
+    <button class="tab-btn" data-tab="services" onclick="switchAdminTab('services')">خدمات</button>
+    <button class="tab-btn" data-tab="ads" onclick="switchAdminTab('ads')">تبلیغات</button>
+    <button class="tab-btn" data-tab="files" onclick="switchAdminTab('files')">فایل‌ها</button>
+    <button class="tab-btn" data-tab="lookups" onclick="switchAdminTab('lookups')">دسته/شهرستان</button>
+</nav>
+<main class="container" style="padding-bottom:3rem;">
+    <section id="admin-overview" class="admin-tab-page"></section>
+    <section id="admin-pending" class="admin-tab-page" style="display:none;"></section>
+    <section id="admin-companies" class="admin-tab-page" style="display:none;"></section>
+    <section id="admin-offers" class="admin-tab-page" style="display:none;"></section>
+    <section id="admin-requests" class="admin-tab-page" style="display:none;"></section>
+    <section id="admin-services" class="admin-tab-page" style="display:none;"></section>
+    <section id="admin-ads" class="admin-tab-page" style="display:none;"></section>
+    <section id="admin-files" class="admin-tab-page" style="display:none;"></section>
+    <section id="admin-lookups" class="admin-tab-page" style="display:none;"></section>
+</main>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="assets/admin.js"></script>
+</body>
+</html>

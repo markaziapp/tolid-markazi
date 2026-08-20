@@ -1,0 +1,22 @@
+name = "tolid-markazi-api"
+main = "src/index.js"
+compatibility_date = "2024-09-01"
+
+# پس از ساخت دیتابیس، مقدار database_id را از داشبورد Cloudflare کپی و جایگزین کنید
+# (اگر با روش داشبورد/بدون کدنویسی پیش می‌روید، این Binding را از تب Settings > Bindings
+#  همان Worker هم می‌توانید اضافه کنید و نیازی به ویرایش این فایل نیست)
+[[d1_databases]]
+binding = "DB"
+database_name = "tolid-markazi-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# توجه: به‌جای Cloudflare R2 (که در برخی مناطق در دسترس نیست)، فایل‌ها روی یک
+# ریپازیتوری جداگانه در GitHub ذخیره می‌شوند. این مقادیر را با Add variable/Secret
+# در تب Settings همین Worker تنظیم کنید (نیازی به ویرایش این فایل نیست):
+#
+#   GITHUB_TOKEN         -> یک Personal Access Token از GitHub با دسترسی نوشتن به ریپازیتوری (Secret)
+#   GITHUB_OWNER         -> نام کاربری یا سازمان GitHub شما (Variable)
+#   GITHUB_UPLOADS_REPO  -> نام ریپازیتوری مخصوص فایل‌ها، مثلاً tolid-markazi-uploads (Variable)
+#   GITHUB_BRANCH        -> نام شاخه، معمولاً main (Variable)
+#   JWT_SECRET           -> یک رشته تصادفی طولانی برای امضای توکن‌ها (Secret)
+#   SETUP_KEY            -> یک کلید یک‌بارمصرف برای ساخت اولین حساب مدیر (Secret)

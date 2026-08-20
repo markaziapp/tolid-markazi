@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ساخت حساب مدیر | راه‌اندازی اولیه</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="assets/styles.css">
+<script>
+(function(){ var s=document.createElement('script'); s.src='assets/config.js'; document.head.appendChild(s); })();
+</script>
+</head>
+<body>
+<main class="narrow" style="padding:2rem 1rem;">
+    <div class="card" style="padding:1.2rem;">
+        <h2 style="text-align:center; margin-bottom:0.3rem;">ساخت حساب مدیر</h2>
+        <p style="font-size:0.8rem; color:var(--text-light); text-align:center; margin-bottom:1.2rem;">
+            این فرم فقط یک‌بار کار می‌کند — همان اولین بار که استفاده شود، برای همیشه غیرفعال می‌شود.
+        </p>
+        <div class="form-group">
+            <label>کلید راه‌اندازی (Setup Key)</label>
+            <input type="text" id="setupKey" placeholder="همان مقداری که در Cloudflare برای SETUP_KEY گذاشتید">
+        </div>
+        <div class="form-group">
+            <label>نام کاربری مدیر</label>
+            <input type="text" id="setupUsername" placeholder="مثلاً admin">
+        </div>
+        <div class="form-group">
+            <label>رمز عبور مدیر</label>
+            <input type="password" id="setupPassword" placeholder="یک رمز قوی انتخاب کنید">
+        </div>
+        <button class="btn btn-primary" style="width:100%;" onclick="createAdmin()">ساخت حساب مدیر</button>
+        <p id="setupResult" style="margin-top:1rem; font-size:0.85rem; text-align:center;"></p>
+    </div>
+</main>
+
+<script>
+function api(path) { return (window.API_BASE || '') + path; }
+async function createAdmin() {
+    const key = document.getElementById('setupKey').value.trim();
+    const username = document.getElementById('setupUsername').value.trim();
+    const password = document.getElementById('setupPassword').value;
+    const result = document.getElementById('setupResult');
+    if (!key || !username || !password) { result.textContent = 'همه فیلدها را پر کنید'; result.style.color = 'var(--red)'; return; }
+    result.textContent = 'در حال ارسال...'; result.style.color = 'var(--text-light)';
+    try {
+        const res = await fetch(api('/api/setup/create-admin'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Setup-Key': key },
+            body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'خطا');
+        result.textContent = '✅ حساب مدیر ساخته شد. حالا می‌توانید از صفحه admin.html وارد شوید.';
+        result.style.color = 'var(--green)';
+    } catch (e) {
+        result.textContent = '❌ ' + e.message;
+        result.style.color = 'var(--red)';
+    }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>بازار صنعتی استان مرکزی | خرید و فروش محصولات و خدمات صنعتی</title>
+<meta name="description" content="بازار آنلاین صنعتی استان مرکزی — عرضه و خرید محصولات صنعتی، درخواست خدمات تخصصی و معرفی واحدهای تولیدی، رایگان و مستقیم.">
+<meta property="og:title" content="بازار صنعتی استان مرکزی">
+<meta property="og:description" content="عرضه، خرید و درخواست خدمات صنعتی در استان مرکزی — رایگان و مستقیم بین تولیدکننده و مشتری.">
+<meta property="og:type" content="website">
+<link rel="stylesheet" href="assets/styles.css">
+<script>
+(function(){
+  var s = document.createElement('script'); s.src = 'assets/config.js'; document.head.appendChild(s);
+})();
+</script>
+</head>
+<body>
+
+<header class="topbar">
+    <div class="container">
+        <div class="brand">🏭 بازار صنعتی <span>استان مرکزی</span></div>
+        <button class="btn btn-outline btn-sm" style="background:transparent;color:#fff;border-color:rgba(255,255,255,0.4);" onclick="location.href='company.html'">پنل کارخانه</button>
+    </div>
+</header>
+
+<nav class="tabs container" id="tabsRow">
+    <button class="tab-btn active" data-tab="home" onclick="switchTab('home')">خانه</button>
+    <button class="tab-btn" data-tab="offers" onclick="switchTab('offers')">عرضه محصولات</button>
+    <button class="tab-btn" data-tab="requests" onclick="switchTab('requests')">درخواست خرید</button>
+    <button class="tab-btn" data-tab="services" onclick="switchTab('services')">درخواست خدمات</button>
+    <button class="tab-btn" data-tab="companies" onclick="switchTab('companies')">واحدهای تولیدی</button>
+    <button class="tab-btn" data-tab="tools" onclick="switchTab('tools')">ابزار و فایل‌ها</button>
+</nav>
+
+<main class="container" style="padding-bottom:3rem;">
+
+    <!-- ===================== خانه ===================== -->
+    <section id="tab-home" class="tab-page">
+        <div style="text-align:center; padding:1.5rem 0 0.5rem;">
+            <h1 style="font-size:2rem; font-weight:800; color:var(--primary);">بازار صنعتی استان مرکزی</h1>
+            <p style="color:var(--text-light); margin-top:0.4rem;">خرید، فروش و حل نیازهای تولید در یک جا — رایگان</p>
+            <div class="search-box" style="max-width:480px; margin:1.1rem auto 0.5rem;">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="homeSearch" placeholder="جستجوی محصول، شرکت یا نیاز صنعتی..." oninput="debouncedSearch(this.value)">
+            </div>
+        </div>
+
+        <div id="adSlotHome"></div>
+
+        <div style="display:flex; gap:0.6rem; flex-wrap:wrap; justify-content:center; margin:1rem 0 0.5rem;">
+            <button class="btn btn-gold" onclick="openModal('supplyModal')">+ عرضه محصول</button>
+            <button class="btn btn-primary" onclick="openModal('purchaseRequestModal')">+ درخواست خرید</button>
+            <button class="btn btn-outline" onclick="openModal('serviceRequestModal')">+ درخواست خدمات</button>
+        </div>
+
+        <div class="section-head-row">
+            <h2 class="section-title">📋 آخرین درخواست‌های خرید</h2>
+            <button class="link-more" onclick="switchTab('requests')">مشاهده همه ←</button>
+        </div>
+        <div id="homeRequests" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
+
+        <div class="section-head-row">
+            <h2 class="section-title">📦 آخرین عرضه‌ها</h2>
+            <button class="link-more" onclick="switchTab('offers')">مشاهده همه ←</button>
+        </div>
+        <div id="homeOffers" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
+
+        <div class="section-head-row">
+            <h2 class="section-title">🏭 واحدهای تولیدی فعال</h2>
+            <button class="link-more" onclick="switchTab('companies')">مشاهده همه ←</button>
+        </div>
+        <div id="homeCompanies" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
+    </section>
+
+    <!-- ===================== عرضه محصولات ===================== -->
+    <section id="tab-offers" class="tab-page" style="display:none;">
+        <h2 class="section-title">📦 عرضه محصولات</h2>
+        <div class="filter-bar">
+            <select id="offerCounty" onchange="loadOffers()"><option value="">همه شهرستان‌ها</option></select>
+            <select id="offerCategory" onchange="loadOffers()"><option value="">همه دسته‌ها</option></select>
+            <button class="btn btn-gold btn-sm" onclick="openModal('supplyModal')">+ عرضه محصول</button>
+        </div>
+        <div id="offersList" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
+    </section>
+
+    <!-- ===================== درخواست خرید ===================== -->
+    <section id="tab-requests" class="tab-page" style="display:none;">
+        <h2 class="section-title">📋 درخواست‌های خرید</h2>
+        <div style="margin-bottom:1rem;"><button class="btn btn-primary btn-sm" onclick="openModal('purchaseRequestModal')">+ ثبت درخواست خرید</button></div>
+        <div id="requestsList" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
+    </section>
+
+    <!-- ===================== درخواست خدمات ===================== -->
+    <section id="tab-services" class="tab-page" style="display:none;">
+        <h2 class="section-title">🧑‍💼 درخواست خدمات و نیروی تخصصی</h2>
+        <p style="color:var(--text-light); font-size:0.85rem; margin-bottom:0.8rem;">مثلاً نیاز به حسابدار، مدیر تولید، مشاور یا هر خدمت تخصصی دیگر</p>
+        <div style="margin-bottom:1rem;"><button class="btn btn-primary btn-sm" onclick="openModal('serviceRequestModal')">+ ثبت درخواست خدمات</button></div>
+        <div id="servicesList" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
+    </section>
+
+    <!-- ===================== واحدهای تولیدی ===================== -->
+    <section id="tab-companies" class="tab-page" style="display:none;">
+        <h2 class="section-title">🏭 واحدهای تولیدی</h2>
+        <div style="margin-bottom:1rem;"><button class="btn btn-outline btn-sm" onclick="location.href='company.html#register'">+ ثبت واحد تولیدی من</button></div>
+        <div id="companiesList" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
+    </section>
+
+    <!-- ===================== ابزار و فایل‌ها ===================== -->
+    <section id="tab-tools" class="tab-page" style="display:none;">
+        <h2 class="section-title">🧮 ابزار محاسبه بهای تمام‌شده</h2>
+        <div class="card" style="max-width:480px; padding:1rem;">
+            <div class="form-group"><label>هزینه مواد اولیه (تومان)</label><input type="number" id="calcMaterial" value="0"></div>
+            <div class="form-group"><label>هزینه دستمزد (تومان)</label><input type="number" id="calcLabor" value="0"></div>
+            <div class="form-group"><label>درصد سربار</label><input type="number" id="calcOverhead" value="0"></div>
+            <div class="form-group"><label>تعداد تولید</label><input type="number" id="calcQuantity" value="1"></div>
+            <div class="form-group"><label>درصد سود پیشنهادی</label><input type="number" id="calcProfit" value="0"></div>
+            <button class="btn btn-primary" style="width:100%;" onclick="runCalculator()">محاسبه</button>
+            <div id="calcResult" style="margin-top:1rem; font-size:0.9rem;"></div>
+        </div>
+
+        <h2 class="section-title">📁 فایل‌های مفید برای تولیدکنندگان</h2>
+        <div id="filesList" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
+    </section>
+
+</main>
+
+<!-- ===================== مودال: عرضه محصول (۲ مرحله) ===================== -->
+<div class="modal-overlay" id="supplyModal">
+    <div class="modal">
+        <div class="modal-header"><h3>عرضه محصول جدید</h3><button class="modal-close" onclick="closeModal('supplyModal')">&times;</button></div>
+        <div class="modal-body">
+            <div class="step-indicator"><span class="step-dot active" id="spDot1"></span><span class="step-dot" id="spDot2"></span></div>
+            <div class="step-label" id="spStepLabel">مرحله ۱ از ۲ — مشخصات محصول</div>
+            <div class="form-step active" id="spStep1">
+                <div class="form-group"><label>عنوان محصول *</label><input type="text" id="spTitle" placeholder="مثلاً میلگرد A3"></div>
+                <div class="form-group"><label>نام شرکت شما *</label><input type="text" id="spCompany"></div>
+                <div class="form-group"><label>شماره تماس *</label><input type="tel" id="spPhone" placeholder="09xxxxxxxxx"></div>
+                <div class="form-row">
+                    <div class="form-group"><label>شهرستان *</label><select id="spCounty"></select></div>
+                    <div class="form-group"><label>دسته‌بندی *</label><select id="spCategory"></select></div>
+                </div>
+                <div class="modal-nav"><button class="btn btn-primary" onclick="spGoStep(2)">مرحله بعد ←</button></div>
+            </div>
+            <div class="form-step" id="spStep2">
+                <div class="form-row">
+                    <div class="form-group"><label>قیمت (تومان) *</label><input type="number" id="spPrice"></div>
+                    <div class="form-group"><label>حداقل سفارش</label><input type="text" id="spMOQ" placeholder="مثلاً ۵۰ تن"></div>
+                </div>
+                <div class="form-group"><label>شرایط پرداخت</label>
+                    <select id="spPayment"><option>نقد</option><option>نسیه</option><option>نقد و نسیه</option></select>
+                </div>
+                <div class="form-group"><label>توضیحات</label><textarea id="spDescription" rows="2"></textarea></div>
+                <div class="modal-nav">
+                    <button class="btn btn-outline" onclick="spGoStep(1)">→ مرحله قبل</button>
+                    <button class="btn btn-gold" onclick="submitSupply()">ثبت عرضه</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===================== مودال: درخواست خرید (۲ مرحله) ===================== -->
+<div class="modal-overlay" id="purchaseRequestModal">
+    <div class="modal">
+        <div class="modal-header"><h3>ثبت درخواست خرید</h3><button class="modal-close" onclick="closeModal('purchaseRequestModal')">&times;</button></div>
+        <div class="modal-body">
+            <div class="step-indicator"><span class="step-dot active" id="prDot1"></span><span class="step-dot" id="prDot2"></span></div>
+            <div class="step-label" id="prStepLabel">مرحله ۱ از ۲ — مشخصات محصول</div>
+            <div class="form-step active" id="prStep1">
+                <div class="form-group"><label>نام محصول *</label><input type="text" id="prProduct"></div>
+                <div class="form-group"><label>مشخصات فنی</label><input type="text" id="prSpecs"></div>
+                <div class="form-row">
+                    <div class="form-group"><label>مقدار موردنیاز *</label><input type="text" id="prQuantity"></div>
+                    <div class="form-group"><label>واحد</label>
+                        <select id="prUnit"><option>تن</option><option>کیلوگرم</option><option>متر</option><option>عدد</option><option>دستگاه</option></select>
+                    </div>
+                </div>
+                <div class="form-group"><label>شهرستان *</label><select id="prCounty"></select></div>
+                <div class="form-group"><label>زمان موردنیاز</label><input type="text" id="prDeadline" placeholder="مثلاً حداکثر ۷ روز"></div>
+                <div class="modal-nav"><button class="btn btn-primary" onclick="prGoStep(2)">مرحله بعد ←</button></div>
+            </div>
+            <div class="form-step" id="prStep2">
+                <div class="form-row">
+                    <div class="form-group"><label>محدوده قیمت (اختیاری)</label><input type="text" id="prPriceRange"></div>
+                    <div class="form-group"><label>شرایط پرداخت</label><select id="prPayment"><option>نقد</option><option>نسیه</option><option>نقد و نسیه</option></select></div>
+                </div>
+                <div class="form-group"><label>توضیحات</label><textarea id="prDescription" rows="2"></textarea></div>
+                <div class="form-row">
+                    <div class="form-group"><label>نام شرکت *</label><input type="text" id="prCompany"></div>
+                    <div class="form-group"><label>نام شخص مسئول</label><input type="text" id="prContactPerson"></div>
+                </div>
+                <div class="form-group"><label>شماره تماس *</label><input type="tel" id="prPhone" placeholder="09xxxxxxxxx"></div>
+                <div class="modal-nav">
+                    <button class="btn btn-outline" onclick="prGoStep(1)">→ مرحله قبل</button>
+                    <button class="btn btn-gold" onclick="submitPurchaseRequest()">ثبت درخواست</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ===================== مودال: درخواست خدمات ===================== -->
+<div class="modal-overlay" id="serviceRequestModal">
+    <div class="modal">
+        <div class="modal-header"><h3>درخواست خدمات / نیروی تخصصی</h3><button class="modal-close" onclick="closeModal('serviceRequestModal')">&times;</button></div>
+        <div class="modal-body">
+            <div class="form-group"><label>عنوان نیاز *</label><input type="text" id="srRole" placeholder="مثلاً حسابدار صنعتی، مدیر تولید..."></div>
+            <div class="form-group"><label>دسته خدمات</label>
+                <select id="srCategory"><option>نیروی انسانی</option><option>خدمات فنی</option><option>مشاوره</option><option>سایر</option></select>
+            </div>
+            <div class="form-group"><label>توضیحات</label><textarea id="srDescription" rows="2"></textarea></div>
+            <div class="form-group"><label>شهرستان</label><select id="srCounty"></select></div>
+            <div class="form-row">
+                <div class="form-group"><label>نام شرکت *</label><input type="text" id="srCompany"></div>
+                <div class="form-group"><label>شماره تماس *</label><input type="tel" id="srPhone" placeholder="09xxxxxxxxx"></div>
+            </div>
+            <button class="btn btn-gold" style="width:100%;" onclick="submitServiceRequest()">ثبت درخواست</button>
+        </div>
+    </div>
+</div>
+
+<!-- ===================== مودال: استعلام قیمت (RFQ) ===================== -->
+<div class="modal-overlay" id="rfqModal">
+    <div class="modal">
+        <div class="modal-header"><h3>درخواست استعلام قیمت</h3><button class="modal-close" onclick="closeModal('rfqModal')">&times;</button></div>
+        <div class="modal-body">
+            <input type="hidden" id="rfqOfferId">
+            <div class="form-group"><label>نام شرکت شما</label><input type="text" id="rfqCompany"></div>
+            <div class="form-group"><label>نام و نام خانوادگی</label><input type="text" id="rfqPerson"></div>
+            <div class="form-group"><label>شماره تماس *</label><input type="tel" id="rfqPhone" placeholder="09xxxxxxxxx"></div>
+            <div class="form-group"><label>مقدار موردنیاز</label><input type="text" id="rfqQuantity"></div>
+            <div class="form-group"><label>توضیح</label><textarea id="rfqMessage" rows="2"></textarea></div>
+            <button class="btn btn-gold" style="width:100%;" onclick="submitRfq()">ارسال استعلام</button>
+        </div>
+    </div>
+</div>
+
+<!-- ===================== مودال: درخواست تبلیغ ===================== -->
+<div class="modal-overlay" id="adRequestModal">
+    <div class="modal">
+        <div class="modal-header"><h3>درخواست تبلیغ در صفحه اصلی</h3><button class="modal-close" onclick="closeModal('adRequestModal')">&times;</button></div>
+        <div class="modal-body">
+            <div class="form-group"><label>نوع تبلیغ *</label>
+                <select id="adType"><option value="text">نوار نوشتاری</option><option value="image">تصویر</option><option value="video">ویدیو (لینک آپارات/یوتیوب)</option></select>
+            </div>
+            <div class="form-group"><label>عنوان</label><input type="text" id="adTitle"></div>
+            <div class="form-group"><label>متن تبلیغ</label><textarea id="adBody" rows="2"></textarea></div>
+            <div class="form-group"><label>لینک تصویر یا ویدیو (اختیاری در این مرحله)</label><input type="text" id="adMediaUrl" placeholder="بعد از هماهنگی با مدیر تکمیل می‌شود"></div>
+            <div class="form-row">
+                <div class="form-group"><label>نام شما/شرکت *</label><input type="text" id="adAdvertiser"></div>
+                <div class="form-group"><label>شماره تماس *</label><input type="tel" id="adPhone" placeholder="09xxxxxxxxx"></div>
+            </div>
+            <button class="btn btn-gold" style="width:100%;" onclick="submitAdRequest()">ثبت درخواست تبلیغ</button>
+        </div>
+    </div>
+</div>
+
+<!-- ===================== مودال: جزئیات ===================== -->
+<div class="modal-overlay" id="detailsModal">
+    <div class="modal">
+        <div class="modal-header"><h3 id="detailsTitle">جزئیات</h3><button class="modal-close" onclick="closeModal('detailsModal')">&times;</button></div>
+        <div class="modal-body" id="detailsBody"></div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div style="text-align:center; padding:1.5rem 0; font-size:0.75rem; color:var(--text-light);">
+    یک واحد تولیدی یا شرکت تبلیغاتی هستید؟ <a href="#" onclick="openModal('adRequestModal'); return false;" style="color:var(--gold-hover); font-weight:700;">درخواست تبلیغ در صفحه اصلی</a>
+</div>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

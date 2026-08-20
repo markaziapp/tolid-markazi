@@ -1,0 +1,608 @@
+import { Router } from './router.js';
+import { json, error, readJson, randomKey, pick } from './utils.js';
+import { hashPassword, verifyPassword, signToken, verifyToken, getBearerToken, tooManyAttempts, recordAttempt } from './auth.js';
+import { uploadToGithub } from './githubStorage.js';
+
+const router = new Router();
+
+// ------------------------------------------------------------------
+// میان‌افزارهای احراز هویت
+// ------------------------------------------------------------------
+async function requireAdmin(request, env) {
+  const token = getBearerToken(request);
+  const payload = await verifyToken(token, env.JWT_SECRET);
+  if (!payload || payload.role !== 'admin') return null;
+  return payload;
+}
+async function requireCompany(request, env) {
+  const token = getBearerToken(request);
+  const payload = await verifyToken(token, env.JWT_SECRET);
+  if (!payload || payload.role !== 'company') return null;
+  return payload;
+}
+function clientIp(request) {
+  return request.headers.get('CF-Connecting-IP') || '';
+}
+
+// ------------------------------------------------------------------
+// عمومی: استان/شهرستان/دسته‌بندی
+// ------------------------------------------------------------------
+router.get('/api/provinces', async ({ env }) => {
+  const { results } = await env.DB.prepare('SELECT * FROM provinces WHERE active=1').all();
+  return json(results);
+});
+router.get('/api/counties', async ({ env }) => {
+  const { results } = await env.DB.prepare('SELECT * FROM counties').all();
+  return json(results);
+});
+router.get('/api/categories', async ({ env }) => {
+  const { results } = await env.DB.prepare('SELECT * FROM categories WHERE active=1').all();
+  return json(results);
+});
+
+// ------------------------------------------------------------------
+// عمومی: فهرست واحدهای تولیدی
+// ------------------------------------------------------------------
+router.get('/api/companies', async ({ env, url }) => {
+  const q = url.searchParams.get('q') || '';
+  let sql = `SELECT id, name, county, province, category, products, capacity, verified, active, presentation_url, presentation_type, presentation_status
+             FROM companies WHERE active=1`;
+  const binds = [];
+  if (q) { sql += ` AND name LIKE ?`; binds.push(`%${q}%`); }
+  sql += ` ORDER BY verified DESC, created_at DESC LIMIT 100`;
+  const { results } = await env.DB.prepare(sql).bind(...binds).all();
+  return json(results);
+});
+
+router.get('/api/companies/:id', async ({ env, params }) => {
+  const c = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(params.id).first();
+  if (!c) return error('یافت نشد', 404);
+  await env.DB.prepare('UPDATE companies SET profile_views = profile_views + 1 WHERE id=?').bind(params.id).run();
+  delete c.password_hash;
+  return json(c);
+});
+
+// ------------------------------------------------------------------
+// عمومی: عرضه‌ها
+// ------------------------------------------------------------------
+router.get('/api/offers', async ({ env, url }) => {
+  const q = url.searchParams.get('q') || '';
+  const county = url.searchParams.get('county') || '';
+  const category = url.searchParams.get('category') || '';
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  let sql = `SELECT o.*, c.name as company_name, c.verified as company_verified
+             FROM offers o JOIN companies c ON c.id = o.company_id
+             WHERE o.active=1`;
+  const binds = [];
+  if (q) { sql += ` AND (o.title LIKE ? OR c.name LIKE ?)`; binds.push(`%${q}%`, `%${q}%`); }
+  if (county) { sql += ` AND o.county = ?`; binds.push(county); }
+  if (category) { sql += ` AND o.category = ?`; binds.push(category); }
+  sql += ` ORDER BY (o.featured_approved=1) DESC, o.created_at DESC LIMIT ?`;
+  binds.push(limit);
+  const { results } = await env.DB.prepare(sql).bind(...binds).all();
+  return json(results);
+});
+
+router.get('/api/offers/:id', async ({ env, params }) => {
+  const offer = await env.DB.prepare(
+    `SELECT o.*, c.name as company_name, c.verified as company_verified, c.phone as company_phone
+     FROM offers o JOIN companies c ON c.id=o.company_id WHERE o.id=?`
+  ).bind(params.id).first();
+  if (!offer) return error('یافت نشد', 404);
+  await env.DB.prepare('UPDATE offers SET views = views + 1 WHERE id=?').bind(params.id).run();
+  return json(offer);
+});
+
+// ثبت عرضه جدید (تولیدکننده جدید یا موجود؛ در انتظار تایید نهایی مدیر برای نشان "تایید شده")
+router.post('/api/offers', async ({ request, env }) => {
+  const b = await readJson(request);
+  if (!b.title || !b.companyName || !b.phone) return error('عنوان محصول، نام شرکت و شماره تماس الزامی است');
+
+  let company = await env.DB.prepare('SELECT * FROM companies WHERE phone=?').bind(b.phone).first();
+  if (!company) {
+    const res = await env.DB.prepare(
+      `INSERT INTO companies (name, phone, province, county, category, products, capacity)
+       VALUES (?,?,?,?,?,?,?)`
+    ).bind(b.companyName, b.phone, b.province || 'مرکزی', b.county || '', b.category || '', b.products || '', b.capacity || '').run();
+    company = { id: res.meta.last_row_id };
+  }
+
+  const specs = JSON.stringify(b.specs || {});
+  const res = await env.DB.prepare(
+    `INSERT INTO offers (company_id, title, category, specs_json, price, unit, moq, payment, province, county, location, description)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(company.id, b.title, b.category || '', specs, b.price || '', b.unit || 'تومان', b.moq || '', b.payment || 'نقد',
+         b.province || 'مرکزی', b.county || '', b.location || '', b.description || '').run();
+
+  return json({ id: res.meta.last_row_id, companyId: company.id }, 201);
+});
+
+// درخواست استعلام قیمت روی یک عرضه
+router.post('/api/rfqs', async ({ request, env }) => {
+  const b = await readJson(request);
+  if (!b.offerId || !b.phone) return error('آگهی و شماره تماس الزامی است');
+  const res = await env.DB.prepare(
+    `INSERT INTO rfqs (offer_id, company_name, person_name, phone, quantity, message) VALUES (?,?,?,?,?,?)`
+  ).bind(b.offerId, b.companyName || '', b.personName || '', b.phone, b.quantity || '', b.message || '').run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+
+// ------------------------------------------------------------------
+// عمومی: درخواست‌های خرید
+// ------------------------------------------------------------------
+router.get('/api/requests', async ({ env }) => {
+  const { results } = await env.DB.prepare(`SELECT * FROM purchase_requests ORDER BY created_at DESC LIMIT 100`).all();
+  for (const r of results) {
+    const c = await env.DB.prepare('SELECT COUNT(*) as c FROM request_responses WHERE request_id=?').bind(r.id).first();
+    r.response_count = c.c;
+  }
+  return json(results);
+});
+
+router.post('/api/requests', async ({ request, env }) => {
+  const b = await readJson(request);
+  if (!b.product || !b.quantity || !b.company || !b.phone) return error('محصول، مقدار، نام شرکت و شماره تماس الزامی است');
+  const res = await env.DB.prepare(
+    `INSERT INTO purchase_requests (product, specs, quantity, unit, province, county, deadline, price_range, payment, description, company, contact_person, phone, status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(b.product, b.specs || '', b.quantity, b.unit || 'تن', b.province || 'مرکزی', b.county || '', b.deadline || '',
+         b.priceRange || '', b.payment || 'نقد', b.description || '', b.company, b.contactPerson || '', b.phone, b.status || 'معمولی').run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+
+router.post('/api/requests/:id/respond', async ({ request, env, params }) => {
+  const b = await readJson(request);
+  await env.DB.prepare(
+    `INSERT INTO request_responses (request_id, company_name, phone) VALUES (?,?,?)`
+  ).bind(params.id, b.companyName || 'یک تأمین‌کننده', b.phone || '').run();
+  return json({ ok: true }, 201);
+});
+
+// ------------------------------------------------------------------
+// عمومی: درخواست خدمات تخصصی/نیروی انسانی
+// ------------------------------------------------------------------
+router.get('/api/service-requests', async ({ env }) => {
+  const { results } = await env.DB.prepare(`SELECT * FROM service_requests ORDER BY created_at DESC LIMIT 100`).all();
+  return json(results);
+});
+router.post('/api/service-requests', async ({ request, env }) => {
+  const b = await readJson(request);
+  if (!b.roleTitle || !b.company || !b.phone) return error('عنوان نیاز، نام شرکت و شماره تماس الزامی است');
+  const res = await env.DB.prepare(
+    `INSERT INTO service_requests (role_title, service_category, description, province, county, company, contact_person, phone, urgency)
+     VALUES (?,?,?,?,?,?,?,?,?)`
+  ).bind(b.roleTitle, b.serviceCategory || '', b.description || '', b.province || 'مرکزی', b.county || '',
+         b.company, b.contactPerson || '', b.phone, b.urgency || 'معمولی').run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+
+// ------------------------------------------------------------------
+// عمومی: مشکلات صنعتی
+// ------------------------------------------------------------------
+router.get('/api/problems', async ({ env }) => {
+  const { results } = await env.DB.prepare(`SELECT * FROM problems ORDER BY created_at DESC LIMIT 100`).all();
+  return json(results);
+});
+router.post('/api/problems', async ({ request, env }) => {
+  const b = await readJson(request);
+  if (!b.title || !b.phone) return error('عنوان و شماره تماس الزامی است');
+  const res = await env.DB.prepare(
+    `INSERT INTO problems (title, description, category, province, county, urgency, company, phone)
+     VALUES (?,?,?,?,?,?,?,?)`
+  ).bind(b.title, b.description || '', b.category || '', b.province || 'مرکزی', b.county || '',
+         b.urgency || 'معمولی', b.company || '', b.phone).run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+
+// ------------------------------------------------------------------
+// عمومی: تبلیغات (نمایش فعال‌ها + ثبت درخواست تبلیغ)
+// ------------------------------------------------------------------
+router.get('/api/ads/active', async ({ env }) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM ads WHERE status='approved' AND (start_date IS NULL OR start_date <= ?) AND (end_date IS NULL OR end_date >= ?)
+     ORDER BY created_at DESC LIMIT 5`
+  ).bind(today, today).all();
+  return json(results);
+});
+router.post('/api/ads', async ({ request, env }) => {
+  const b = await readJson(request);
+  if (!b.adType || !b.advertiserPhone) return error('نوع تبلیغ و شماره تماس الزامی است');
+  const res = await env.DB.prepare(
+    `INSERT INTO ads (ad_type, title, body_text, image_url, video_embed_url, link_url, advertiser_name, advertiser_phone)
+     VALUES (?,?,?,?,?,?,?,?)`
+  ).bind(b.adType, b.title || '', b.bodyText || '', b.imageUrl || '', b.videoEmbedUrl || '', b.linkUrl || '',
+         b.advertiserName || '', b.advertiserPhone).run();
+  return json({ id: res.meta.last_row_id, message: 'درخواست تبلیغ ثبت شد و پس از تایید مدیر نمایش داده می‌شود.' }, 201);
+});
+
+// ------------------------------------------------------------------
+// عمومی: فایل‌های مفید مدیر
+// ------------------------------------------------------------------
+router.get('/api/admin-files', async ({ env }) => {
+  const { results } = await env.DB.prepare(`SELECT id, title, description, file_type, is_locked, price,
+    CASE WHEN is_locked=0 THEN file_url ELSE NULL END as file_url
+    FROM admin_files ORDER BY created_at DESC`).all();
+  return json(results);
+});
+
+// ------------------------------------------------------------------
+// عمومی: ابزار محاسبه بهای تمام‌شده (کاملاً سمت سرور بدون منبع خارجی)
+// ------------------------------------------------------------------
+router.get('/api/calculator-settings', async ({ env }) => {
+  const row = await env.DB.prepare('SELECT * FROM calculator_settings WHERE id=1').first();
+  return json(row);
+});
+router.post('/api/calculate-cost', async ({ request }) => {
+  const b = await readJson(request);
+  const material = parseFloat(b.materialCost || 0);
+  const labor = parseFloat(b.laborCost || 0);
+  const overheadPercent = parseFloat(b.overheadPercent || 0);
+  const quantity = parseFloat(b.quantity || 1) || 1;
+  const profitPercent = parseFloat(b.profitPercent || 0);
+  const directCost = material + labor;
+  const overhead = directCost * (overheadPercent / 100);
+  const totalCost = directCost + overhead;
+  const unitCost = totalCost / quantity;
+  const suggestedPrice = unitCost * (1 + profitPercent / 100);
+  return json({ directCost, overhead, totalCost, unitCost, suggestedPrice });
+});
+
+// ------------------------------------------------------------------
+// آمار بازدید داخلی (سبک)
+// ------------------------------------------------------------------
+router.post('/api/track', async ({ request, env }) => {
+  const b = await readJson(request);
+  await env.DB.prepare('INSERT INTO page_views (path, ref) VALUES (?,?)').bind(b.path || '/', b.ref || '').run();
+  return json({ ok: true }, 201);
+});
+
+// ------------------------------------------------------------------
+// پنل کارخانه: ورود / پروفایل / داشبورد / ویرایش (در انتظار تایید)
+// ------------------------------------------------------------------
+router.post('/api/company/register', async ({ request, env }) => {
+  const b = await readJson(request);
+  if (!b.name || !b.phone || !b.password) return error('نام، شماره تماس و رمز عبور الزامی است');
+  const exists = await env.DB.prepare('SELECT id FROM companies WHERE phone=?').bind(b.phone).first();
+  if (exists) return error('این شماره قبلاً ثبت شده؛ از فرم ورود استفاده کنید', 409);
+  const pw = await hashPassword(b.password);
+  const res = await env.DB.prepare(
+    `INSERT INTO companies (name, phone, password_hash, province, county, category, products, capacity, logo_url, license_url)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  ).bind(b.name, b.phone, pw, b.province || 'مرکزی', b.county || '', b.category || '', b.products || '',
+         b.capacity || '', b.logoUrl || '', b.licenseUrl || '').run();
+  return json({ id: res.meta.last_row_id, message: 'ثبت شد و در انتظار تایید مدیر است.' }, 201);
+});
+
+router.post('/api/company/login', async ({ request, env }) => {
+  const b = await readJson(request);
+  const ip = clientIp(request);
+  if (await tooManyAttempts(env.DB, 'company', b.phone || '', ip)) return error('تعداد تلاش بیش از حد مجاز؛ کمی بعد دوباره تلاش کنید', 429);
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE phone=?').bind(b.phone || '').first();
+  const ok = company && company.password_hash && await verifyPassword(b.password || '', company.password_hash);
+  await recordAttempt(env.DB, 'company', b.phone || '', ip, !!ok);
+  if (!ok) return error('شماره یا رمز عبور اشتباه است', 401);
+  const token = await signToken({ role: 'company', companyId: company.id }, env.JWT_SECRET);
+  return json({ token, company: pick(company, ['id', 'name', 'phone', 'verified', 'active']) });
+});
+
+router.get('/api/company/dashboard', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const cid = auth.companyId;
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(cid).first();
+  const offersCount = await env.DB.prepare('SELECT COUNT(*) c FROM offers WHERE company_id=?').bind(cid).first();
+  const rfqCount = await env.DB.prepare(
+    `SELECT COUNT(*) c FROM rfqs r JOIN offers o ON o.id=r.offer_id WHERE o.company_id=?`
+  ).bind(cid).first();
+  const respCount = await env.DB.prepare('SELECT COUNT(*) c FROM request_responses WHERE company_id=?').bind(cid).first();
+  const { results: monthlyViews } = await env.DB.prepare(
+    `SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as c FROM page_views
+     WHERE path LIKE ('%/company/' || ? || '%') GROUP BY month ORDER BY month DESC LIMIT 6`
+  ).bind(cid).all();
+  return json({
+    company: pick(company, ['id', 'name', 'phone', 'verified', 'active', 'profile_views', 'presentation_status']),
+    stats: { offers: offersCount.c, rfqs: rfqCount.c, responses: respCount.c, profileViews: company.profile_views },
+    monthlyViews,
+  });
+});
+
+router.put('/api/company/profile', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const b = await readJson(request);
+  const changes = pick(b, ['name', 'county', 'category', 'products', 'capacity', 'logo_url', 'license_url']);
+  await env.DB.prepare(
+    `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('company', ?, ?, ?)`
+  ).bind(auth.companyId, auth.companyId, JSON.stringify(changes)).run();
+  return json({ ok: true, message: 'تغییرات ثبت شد و پس از تایید مدیر اعمال می‌شود.' }, 201);
+});
+
+router.put('/api/company/offers/:id', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const offer = await env.DB.prepare('SELECT * FROM offers WHERE id=? AND company_id=?').bind(params.id, auth.companyId).first();
+  if (!offer) return error('این آگهی متعلق به شما نیست', 403);
+  const b = await readJson(request);
+  const changes = pick(b, ['title', 'price', 'unit', 'moq', 'payment', 'description', 'specs_json', 'active']);
+  await env.DB.prepare(
+    `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('offer', ?, ?, ?)`
+  ).bind(params.id, auth.companyId, JSON.stringify(changes)).run();
+  return json({ ok: true, message: 'تغییرات ثبت شد و پس از تایید مدیر اعمال می‌شود.' }, 201);
+});
+
+router.post('/api/company/presentation', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const b = await readJson(request);
+  await env.DB.prepare(
+    `UPDATE companies SET presentation_url=?, presentation_type=?, presentation_status='pending' WHERE id=?`
+  ).bind(b.url || '', b.type || 'video_link', auth.companyId).run();
+  return json({ ok: true, message: 'ارسال شد و در انتظار تایید مدیر است.' });
+});
+
+// ------------------------------------------------------------------
+// راه‌اندازی اولیه: ساخت اولین حساب مدیر (فقط یک‌بار قابل استفاده است)
+// ------------------------------------------------------------------
+router.post('/api/setup/create-admin', async ({ request, env }) => {
+  const existing = await env.DB.prepare('SELECT COUNT(*) c FROM admin_users').first();
+  if (existing.c > 0) return error('حساب مدیر قبلاً ساخته شده؛ این مسیر دیگر فعال نیست', 403);
+  const key = request.headers.get('X-Setup-Key');
+  if (!key || key !== env.SETUP_KEY) return error('کلید راه‌اندازی نامعتبر است', 401);
+  const b = await readJson(request);
+  if (!b.username || !b.password) return error('نام کاربری و رمز عبور الزامی است');
+  const pw = await hashPassword(b.password);
+  await env.DB.prepare('INSERT INTO admin_users (username, password_hash) VALUES (?,?)').bind(b.username, pw).run();
+  return json({ ok: true, message: 'حساب مدیر ساخته شد. حالا از فرم ورود پنل مدیریت استفاده کنید.' }, 201);
+});
+
+// ------------------------------------------------------------------
+// پنل مدیریت (مخفی): ورود
+// ------------------------------------------------------------------
+router.post('/api/admin/login', async ({ request, env }) => {
+  const b = await readJson(request);
+  const ip = clientIp(request);
+  if (await tooManyAttempts(env.DB, 'admin', b.username || '', ip)) return error('تعداد تلاش بیش از حد مجاز؛ کمی بعد دوباره تلاش کنید', 429);
+  const admin = await env.DB.prepare('SELECT * FROM admin_users WHERE username=?').bind(b.username || '').first();
+  const ok = admin && await verifyPassword(b.password || '', admin.password_hash);
+  await recordAttempt(env.DB, 'admin', b.username || '', ip, !!ok);
+  if (!ok) return error('نام کاربری یا رمز اشتباه است', 401);
+  const token = await signToken({ role: 'admin', adminId: admin.id, username: admin.username }, env.JWT_SECRET, 60 * 60 * 12);
+  return json({ token });
+});
+
+// ------------------------------------------------------------------
+// پنل مدیریت: CRUD عمومی برای جدول‌های ساده
+// ------------------------------------------------------------------
+const SIMPLE_TABLES = {
+  categories: ['name', 'active'],
+  provinces: ['name', 'active'],
+  counties: ['name', 'province_id'],
+  'admin-files': { table: 'admin_files', cols: ['title', 'description', 'file_url', 'file_type', 'is_locked', 'price'] },
+};
+
+function tableInfo(key) {
+  const v = SIMPLE_TABLES[key];
+  if (!v) return null;
+  return Array.isArray(v) ? { table: key, cols: v } : v;
+}
+
+for (const key of Object.keys(SIMPLE_TABLES)) {
+  router.get(`/api/admin/${key}`, async ({ request, env }) => {
+    if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+    const { table } = tableInfo(key);
+    const { results } = await env.DB.prepare(`SELECT * FROM ${table} ORDER BY id DESC`).all();
+    return json(results);
+  });
+  router.post(`/api/admin/${key}`, async ({ request, env }) => {
+    if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+    const { table, cols } = tableInfo(key);
+    const b = await readJson(request);
+    const values = cols.map(c => b[c] ?? null);
+    const placeholders = cols.map(() => '?').join(',');
+    const res = await env.DB.prepare(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`).bind(...values).run();
+    return json({ id: res.meta.last_row_id }, 201);
+  });
+  router.put(`/api/admin/${key}/:id`, async ({ request, env, params }) => {
+    if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+    const { table, cols } = tableInfo(key);
+    const b = await readJson(request);
+    const setCols = cols.filter(c => b[c] !== undefined);
+    if (!setCols.length) return error('چیزی برای تغییر ارسال نشده');
+    const setSql = setCols.map(c => `${c}=?`).join(',');
+    const values = setCols.map(c => b[c]);
+    await env.DB.prepare(`UPDATE ${table} SET ${setSql} WHERE id=?`).bind(...values, params.id).run();
+    return json({ ok: true });
+  });
+  router.del(`/api/admin/${key}/:id`, async ({ request, env, params }) => {
+    if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+    const { table } = tableInfo(key);
+    await env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(params.id).run();
+    return json({ ok: true });
+  });
+}
+
+// ------------------------------------------------------------------
+// پنل مدیریت: عرضه‌ها، درخواست‌ها، شرکت‌ها، خدمات، مشکلات (با فیلدهای خاص خودشان)
+// ------------------------------------------------------------------
+router.get('/api/admin/offers', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(
+    `SELECT o.*, c.name as company_name FROM offers o JOIN companies c ON c.id=o.company_id ORDER BY o.created_at DESC`
+  ).all();
+  return json(results);
+});
+router.put('/api/admin/offers/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  const cols = ['title', 'category', 'price', 'unit', 'moq', 'payment', 'description', 'verified', 'active', 'featured', 'featured_approved'];
+  const setCols = cols.filter(c => b[c] !== undefined);
+  if (!setCols.length) return error('چیزی برای تغییر ارسال نشده');
+  await env.DB.prepare(`UPDATE offers SET ${setCols.map(c => c + '=?').join(',')} WHERE id=?`)
+    .bind(...setCols.map(c => b[c]), params.id).run();
+  return json({ ok: true });
+});
+router.del('/api/admin/offers/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM offers WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/companies', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM companies ORDER BY created_at DESC').all();
+  return json(results);
+});
+router.put('/api/admin/companies/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  const cols = ['name', 'county', 'category', 'products', 'capacity', 'verified', 'active', 'presentation_status'];
+  const setCols = cols.filter(c => b[c] !== undefined);
+  if (!setCols.length) return error('چیزی برای تغییر ارسال نشده');
+  await env.DB.prepare(`UPDATE companies SET ${setCols.map(c => c + '=?').join(',')} WHERE id=?`)
+    .bind(...setCols.map(c => b[c]), params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/pending-edits', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`SELECT * FROM pending_edits WHERE status='pending' ORDER BY created_at DESC`).all();
+  return json(results);
+});
+router.put('/api/admin/pending-edits/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request); // { decision: 'approved' | 'rejected' }
+  const edit = await env.DB.prepare('SELECT * FROM pending_edits WHERE id=?').bind(params.id).first();
+  if (!edit) return error('یافت نشد', 404);
+  if (b.decision === 'approved') {
+    const changes = JSON.parse(edit.changes_json);
+    const cols = Object.keys(changes);
+    if (cols.length) {
+      const table = edit.entity_type === 'company' ? 'companies' : 'offers';
+      await env.DB.prepare(`UPDATE ${table} SET ${cols.map(c => c + '=?').join(',')} WHERE id=?`)
+        .bind(...cols.map(c => changes[c]), edit.entity_id).run();
+    }
+  }
+  await env.DB.prepare(`UPDATE pending_edits SET status=?, reviewed_at=datetime('now') WHERE id=?`)
+    .bind(b.decision, params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/requests', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM purchase_requests ORDER BY created_at DESC').all();
+  return json(results);
+});
+router.del('/api/admin/requests/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM purchase_requests WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/service-requests', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM service_requests ORDER BY created_at DESC').all();
+  return json(results);
+});
+router.put('/api/admin/service-requests/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  await env.DB.prepare('UPDATE service_requests SET status=? WHERE id=?').bind(b.status || 'باز', params.id).run();
+  return json({ ok: true });
+});
+router.del('/api/admin/service-requests/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM service_requests WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/problems', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM problems ORDER BY created_at DESC').all();
+  return json(results);
+});
+router.del('/api/admin/problems/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM problems WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/ads', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM ads ORDER BY created_at DESC').all();
+  return json(results);
+});
+router.put('/api/admin/ads/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  const cols = ['status', 'start_date', 'end_date', 'title', 'body_text', 'image_url', 'video_embed_url', 'link_url'];
+  const setCols = cols.filter(c => b[c] !== undefined);
+  await env.DB.prepare(`UPDATE ads SET ${setCols.map(c => c + '=?').join(',')} WHERE id=?`)
+    .bind(...setCols.map(c => b[c]), params.id).run();
+  return json({ ok: true });
+});
+router.del('/api/admin/ads/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM ads WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.put('/api/admin/calculator-settings', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  await env.DB.prepare(`UPDATE calculator_settings SET base_notes=?, updated_at=datetime('now') WHERE id=1`)
+    .bind(b.baseNotes || '').run();
+  return json({ ok: true });
+});
+
+// آمار برای داشبورد پنل مدیریت
+router.get('/api/admin/analytics', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const totalViews = await env.DB.prepare('SELECT COUNT(*) c FROM page_views').first();
+  const { results: daily } = await env.DB.prepare(
+    `SELECT date(created_at) as day, COUNT(*) as c FROM page_views GROUP BY day ORDER BY day DESC LIMIT 14`
+  ).all();
+  const { results: topPaths } = await env.DB.prepare(
+    `SELECT path, COUNT(*) as c FROM page_views GROUP BY path ORDER BY c DESC LIMIT 10`
+  ).all();
+  const totalCompanies = await env.DB.prepare('SELECT COUNT(*) c FROM companies').first();
+  const totalOffers = await env.DB.prepare('SELECT COUNT(*) c FROM offers').first();
+  const totalRequests = await env.DB.prepare('SELECT COUNT(*) c FROM purchase_requests').first();
+  return json({
+    totalViews: totalViews.c, daily, topPaths,
+    totals: { companies: totalCompanies.c, offers: totalOffers.c, requests: totalRequests.c },
+  });
+});
+
+// ------------------------------------------------------------------
+// آپلود فایل به GitHub (لوگو، مجوز، عکس تبلیغ، فایل‌های مدیر)
+// چون R2 در دسترس نیست، فایل‌ها در یک ریپازیتوری جدا روی GitHub ذخیره
+// و از طریق jsDelivr (CDN رایگان) سرو می‌شوند.
+// ------------------------------------------------------------------
+router.post('/api/upload', async ({ request, env }) => {
+  const contentType = request.headers.get('content-type') || '';
+  if (!contentType.includes('multipart/form-data')) return error('فرمت درخواست نامعتبر است');
+  const form = await request.formData();
+  const file = form.get('file');
+  if (!file) return error('فایلی ارسال نشده');
+  const maxBytes = 8 * 1024 * 1024; // ۸ مگابایت — با توجه به محدودیت GitHub Contents API
+  if (file.size > maxBytes) return error('حجم فایل باید کمتر از ۸ مگابایت باشد. برای ویدیو، لینک آپارات/یوتیوب استفاده کنید.');
+  const ext = (file.name.split('.').pop() || 'bin').toLowerCase();
+  const key = randomKey('uploads', ext);
+  try {
+    const result = await uploadToGithub(env, key, await file.arrayBuffer(), file.type);
+    return json({ key, url: result.url, fallbackUrl: result.fallbackUrl }, 201);
+  } catch (e) {
+    return error(String(e && e.message || e), 502);
+  }
+});
+
+export default {
+  async fetch(request, env, ctx) {
+    try {
+      return await router.handle(request, env, ctx);
+    } catch (e) {
+      return json({ error: 'خطای داخلی سرور', detail: String(e && e.message || e) }, 500);
+    }
+  },
+};
