@@ -30,7 +30,7 @@ export class Router {
       return new Response(null, {
         headers: {
           'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Setup-Key',
           'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
         },
       });
