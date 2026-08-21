@@ -45,10 +45,12 @@ router.get('/api/categories', async ({ env }) => {
 // ------------------------------------------------------------------
 router.get('/api/companies', async ({ env, url }) => {
   const q = url.searchParams.get('q') || '';
-  let sql = `SELECT id, name, county, province, category, products, capacity, verified, active, presentation_url, presentation_type, presentation_status
+  const role = url.searchParams.get('role') || '';
+  let sql = `SELECT id, name, county, province, category, products, capacity, role, verified, active, presentation_url, presentation_type, presentation_status
              FROM companies WHERE active=1`;
   const binds = [];
   if (q) { sql += ` AND name LIKE ?`; binds.push(`%${q}%`); }
+  if (role) { sql += ` AND role = ?`; binds.push(role); }
   sql += ` ORDER BY verified DESC, created_at DESC LIMIT 100`;
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
   return json(results);
@@ -93,37 +95,34 @@ router.get('/api/offers/:id', async ({ env, params }) => {
   return json(offer);
 });
 
-// ثبت عرضه جدید (تولیدکننده جدید یا موجود؛ در انتظار تایید نهایی مدیر برای نشان "تایید شده")
+// ثبت عرضه جدید — فقط برای کاربر واردشده، خودکار از پروفایل او پر می‌شود
 router.post('/api/offers', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای ثبت آگهی ابتدا باید ثبت‌نام یا وارد شوید', 401);
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
+  if (!company) return error('حساب یافت نشد', 404);
   const b = await readJson(request);
-  if (!b.title || !b.companyName || !b.phone) return error('عنوان محصول، نام شرکت و شماره تماس الزامی است');
-
-  let company = await env.DB.prepare('SELECT * FROM companies WHERE phone=?').bind(b.phone).first();
-  if (!company) {
-    const res = await env.DB.prepare(
-      `INSERT INTO companies (name, phone, province, county, category, products, capacity)
-       VALUES (?,?,?,?,?,?,?)`
-    ).bind(b.companyName, b.phone, b.province || 'مرکزی', b.county || '', b.category || '', b.products || '', b.capacity || '').run();
-    company = { id: res.meta.last_row_id };
-  }
-
+  if (!b.title) return error('عنوان محصول الزامی است');
   const specs = JSON.stringify(b.specs || {});
   const res = await env.DB.prepare(
-    `INSERT INTO offers (company_id, title, category, specs_json, price, unit, moq, payment, province, county, location, description)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO offers (company_id, title, category, specs_json, price, unit, moq, payment, province, county, location, description, image_url)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(company.id, b.title, b.category || '', specs, b.price || '', b.unit || 'تومان', b.moq || '', b.payment || 'نقد',
-         b.province || 'مرکزی', b.county || '', b.location || '', b.description || '').run();
-
+         company.province || 'مرکزی', b.county || company.county || '', b.location || '', b.description || '', b.imageUrl || '').run();
   return json({ id: res.meta.last_row_id, companyId: company.id }, 201);
 });
 
-// درخواست استعلام قیمت روی یک عرضه
+// درخواست استعلام قیمت روی یک عرضه — فقط برای کاربر واردشده
 router.post('/api/rfqs', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای ارسال استعلام ابتدا باید ثبت‌نام یا وارد شوید', 401);
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
+  if (!company) return error('حساب یافت نشد', 404);
   const b = await readJson(request);
-  if (!b.offerId || !b.phone) return error('آگهی و شماره تماس الزامی است');
+  if (!b.offerId) return error('آگهی مشخص نشده');
   const res = await env.DB.prepare(
-    `INSERT INTO rfqs (offer_id, company_name, person_name, phone, quantity, message) VALUES (?,?,?,?,?,?)`
-  ).bind(b.offerId, b.companyName || '', b.personName || '', b.phone, b.quantity || '', b.message || '').run();
+    `INSERT INTO rfqs (offer_id, company_id, company_name, person_name, phone, quantity, message) VALUES (?,?,?,?,?,?,?)`
+  ).bind(b.offerId, company.id, company.name, company.name, company.phone, b.quantity || '', b.message || '').run();
   return json({ id: res.meta.last_row_id }, 201);
 });
 
@@ -140,21 +139,28 @@ router.get('/api/requests', async ({ env }) => {
 });
 
 router.post('/api/requests', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای ثبت درخواست خرید ابتدا باید ثبت‌نام یا وارد شوید', 401);
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
+  if (!company) return error('حساب یافت نشد', 404);
   const b = await readJson(request);
-  if (!b.product || !b.quantity || !b.company || !b.phone) return error('محصول، مقدار، نام شرکت و شماره تماس الزامی است');
+  if (!b.product || !b.quantity) return error('محصول و مقدار الزامی است');
   const res = await env.DB.prepare(
-    `INSERT INTO purchase_requests (product, specs, quantity, unit, province, county, deadline, price_range, payment, description, company, contact_person, phone, status)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).bind(b.product, b.specs || '', b.quantity, b.unit || 'تن', b.province || 'مرکزی', b.county || '', b.deadline || '',
-         b.priceRange || '', b.payment || 'نقد', b.description || '', b.company, b.contactPerson || '', b.phone, b.status || 'معمولی').run();
+    `INSERT INTO purchase_requests (company_id, product, specs, quantity, unit, province, county, deadline, price_range, payment, description, company, contact_person, phone, status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(company.id, b.product, b.specs || '', b.quantity, b.unit || 'تن', company.province || 'مرکزی', b.county || company.county || '',
+         b.deadline || '', b.priceRange || '', b.payment || 'نقد', b.description || '', company.name, '', company.phone, b.status || 'معمولی').run();
   return json({ id: res.meta.last_row_id }, 201);
 });
 
 router.post('/api/requests/:id/respond', async ({ request, env, params }) => {
-  const b = await readJson(request);
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای اعلام آمادگی ابتدا باید ثبت‌نام یا وارد شوید', 401);
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
+  if (!company) return error('حساب یافت نشد', 404);
   await env.DB.prepare(
-    `INSERT INTO request_responses (request_id, company_name, phone) VALUES (?,?,?)`
-  ).bind(params.id, b.companyName || 'یک تأمین‌کننده', b.phone || '').run();
+    `INSERT INTO request_responses (request_id, company_id, company_name, phone) VALUES (?,?,?,?)`
+  ).bind(params.id, company.id, company.name, company.phone).run();
   return json({ ok: true }, 201);
 });
 
@@ -166,13 +172,17 @@ router.get('/api/service-requests', async ({ env }) => {
   return json(results);
 });
 router.post('/api/service-requests', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای ثبت درخواست خدمات ابتدا باید ثبت‌نام یا وارد شوید', 401);
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
+  if (!company) return error('حساب یافت نشد', 404);
   const b = await readJson(request);
-  if (!b.roleTitle || !b.company || !b.phone) return error('عنوان نیاز، نام شرکت و شماره تماس الزامی است');
+  if (!b.roleTitle) return error('عنوان نیاز الزامی است');
   const res = await env.DB.prepare(
-    `INSERT INTO service_requests (role_title, service_category, description, province, county, company, contact_person, phone, urgency)
-     VALUES (?,?,?,?,?,?,?,?,?)`
-  ).bind(b.roleTitle, b.serviceCategory || '', b.description || '', b.province || 'مرکزی', b.county || '',
-         b.company, b.contactPerson || '', b.phone, b.urgency || 'معمولی').run();
+    `INSERT INTO service_requests (company_id, role_title, service_category, description, province, county, company, contact_person, phone, urgency)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  ).bind(company.id, b.roleTitle, b.serviceCategory || '', b.description || '', company.province || 'مرکزی', b.county || company.county || '',
+         company.name, '', company.phone, b.urgency || 'معمولی').run();
   return json({ id: res.meta.last_row_id }, 201);
 });
 
@@ -192,6 +202,21 @@ router.post('/api/problems', async ({ request, env }) => {
   ).bind(b.title, b.description || '', b.category || '', b.province || 'مرکزی', b.county || '',
          b.urgency || 'معمولی', b.company || '', b.phone).run();
   return json({ id: res.meta.last_row_id }, 201);
+});
+
+// ------------------------------------------------------------------
+// عمومی: تماس با ما / پیشنهاد / پشتیبانی (بدون نیاز به ورود)
+// ------------------------------------------------------------------
+router.post('/api/contact', async ({ request, env }) => {
+  const b = await readJson(request);
+  if (!b.message) return error('متن پیام الزامی است');
+  let companyId = null;
+  const auth = await requireCompany(request, env);
+  if (auth) companyId = auth.companyId;
+  const res = await env.DB.prepare(
+    `INSERT INTO contact_messages (company_id, name, phone, subject, message) VALUES (?,?,?,?,?)`
+  ).bind(companyId, b.name || '', b.phone || '', b.subject || '', b.message).run();
+  return json({ id: res.meta.last_row_id, message: 'پیام شما ارسال شد.' }, 201);
 });
 
 // ------------------------------------------------------------------
@@ -260,18 +285,20 @@ router.post('/api/track', async ({ request, env }) => {
 // ------------------------------------------------------------------
 // پنل کارخانه: ورود / پروفایل / داشبورد / ویرایش (در انتظار تایید)
 // ------------------------------------------------------------------
+const VALID_ROLES = ['producer', 'service', 'buyer', 'other'];
 router.post('/api/company/register', async ({ request, env }) => {
   const b = await readJson(request);
-  if (!b.name || !b.phone || !b.password) return error('نام، شماره تماس و رمز عبور الزامی است');
+  if (!b.name || !b.phone || !b.password || !b.role) return error('نام، شماره تماس، رمز عبور و نوع فعالیت الزامی است');
+  if (!VALID_ROLES.includes(b.role)) return error('نوع فعالیت نامعتبر است');
   const exists = await env.DB.prepare('SELECT id FROM companies WHERE phone=?').bind(b.phone).first();
   if (exists) return error('این شماره قبلاً ثبت شده؛ از فرم ورود استفاده کنید', 409);
   const pw = await hashPassword(b.password);
   const res = await env.DB.prepare(
-    `INSERT INTO companies (name, phone, password_hash, province, county, category, products, capacity, logo_url, license_url)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`
-  ).bind(b.name, b.phone, pw, b.province || 'مرکزی', b.county || '', b.category || '', b.products || '',
-         b.capacity || '', b.logoUrl || '', b.licenseUrl || '').run();
-  return json({ id: res.meta.last_row_id, message: 'ثبت شد و در انتظار تایید مدیر است.' }, 201);
+    `INSERT INTO companies (name, phone, password_hash, role, province, profile_completed)
+     VALUES (?,?,?,?,?,0)`
+  ).bind(b.name, b.phone, pw, b.role, 'مرکزی').run();
+  const token = await signToken({ role: 'company', companyId: res.meta.last_row_id }, env.JWT_SECRET);
+  return json({ id: res.meta.last_row_id, token, message: 'ثبت‌نام شما انجام شد.' }, 201);
 });
 
 router.post('/api/company/login', async ({ request, env }) => {
@@ -283,7 +310,7 @@ router.post('/api/company/login', async ({ request, env }) => {
   await recordAttempt(env.DB, 'company', b.phone || '', ip, !!ok);
   if (!ok) return error('شماره یا رمز عبور اشتباه است', 401);
   const token = await signToken({ role: 'company', companyId: company.id }, env.JWT_SECRET);
-  return json({ token, company: pick(company, ['id', 'name', 'phone', 'verified', 'active']) });
+  return json({ token, company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_completed']) });
 });
 
 router.get('/api/company/dashboard', async ({ request, env }) => {
@@ -296,14 +323,35 @@ router.get('/api/company/dashboard', async ({ request, env }) => {
     `SELECT COUNT(*) c FROM rfqs r JOIN offers o ON o.id=r.offer_id WHERE o.company_id=?`
   ).bind(cid).first();
   const respCount = await env.DB.prepare('SELECT COUNT(*) c FROM request_responses WHERE company_id=?').bind(cid).first();
+  const myRequestsCount = await env.DB.prepare('SELECT COUNT(*) c FROM purchase_requests WHERE company_id=?').bind(cid).first();
+  const myServiceCount = await env.DB.prepare('SELECT COUNT(*) c FROM service_requests WHERE company_id=?').bind(cid).first();
+  const { results: myOffers } = await env.DB.prepare('SELECT id, title, price, active, verified, views FROM offers WHERE company_id=? ORDER BY created_at DESC').bind(cid).all();
+
+  // درخواست‌های خرید من + پاسخ‌هایی که تأمین‌کننده‌ها داده‌اند (با مشخصات تماس)
+  const { results: myRequests } = await env.DB.prepare('SELECT * FROM purchase_requests WHERE company_id=? ORDER BY created_at DESC').bind(cid).all();
+  for (const r of myRequests) {
+    const { results: responses } = await env.DB.prepare('SELECT company_name, phone, created_at FROM request_responses WHERE request_id=?').bind(r.id).all();
+    r.responses = responses;
+  }
+
+  // استعلام‌هایی که من فرستاده‌ام
+  const { results: myRfqsSent } = await env.DB.prepare(
+    `SELECT rfqs.*, offers.title as offer_title FROM rfqs JOIN offers ON offers.id = rfqs.offer_id WHERE rfqs.company_id=? ORDER BY rfqs.created_at DESC`
+  ).bind(cid).all();
+
+  // استعلام‌هایی که روی آگهی‌های من دریافت شده (اگر آگهی دارم)
+  const { results: rfqsReceived } = await env.DB.prepare(
+    `SELECT rfqs.*, offers.title as offer_title FROM rfqs JOIN offers ON offers.id = rfqs.offer_id WHERE offers.company_id=? ORDER BY rfqs.created_at DESC`
+  ).bind(cid).all();
+
   const { results: monthlyViews } = await env.DB.prepare(
     `SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as c FROM page_views
      WHERE path LIKE ('%/company/' || ? || '%') GROUP BY month ORDER BY month DESC LIMIT 6`
   ).bind(cid).all();
   return json({
-    company: pick(company, ['id', 'name', 'phone', 'verified', 'active', 'profile_views', 'presentation_status']),
-    stats: { offers: offersCount.c, rfqs: rfqCount.c, responses: respCount.c, profileViews: company.profile_views },
-    monthlyViews,
+    company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_views', 'presentation_status', 'profile_completed', 'county', 'category', 'products', 'capacity']),
+    stats: { offers: offersCount.c, rfqs: rfqCount.c, responses: respCount.c, profileViews: company.profile_views, myRequests: myRequestsCount.c, myServices: myServiceCount.c },
+    myOffers, myRequests, myRfqsSent, rfqsReceived, monthlyViews,
   });
 });
 
@@ -315,6 +363,7 @@ router.put('/api/company/profile', async ({ request, env }) => {
   await env.DB.prepare(
     `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('company', ?, ?, ?)`
   ).bind(auth.companyId, auth.companyId, JSON.stringify(changes)).run();
+  await env.DB.prepare(`UPDATE companies SET profile_completed=1 WHERE id=?`).bind(auth.companyId).run();
   return json({ ok: true, message: 'تغییرات ثبت شد و پس از تایید مدیر اعمال می‌شود.' }, 201);
 });
 
@@ -453,6 +502,31 @@ router.get('/api/admin/companies', async ({ request, env }) => {
   const { results } = await env.DB.prepare('SELECT * FROM companies ORDER BY created_at DESC').all();
   return json(results);
 });
+
+router.get('/api/admin/contact-messages', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM contact_messages ORDER BY created_at DESC').all();
+  return json(results);
+});
+router.put('/api/admin/contact-messages/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  await env.DB.prepare('UPDATE contact_messages SET status=? WHERE id=?').bind(b.status || 'خوانده‌شد', params.id).run();
+  return json({ ok: true });
+});
+router.del('/api/admin/contact-messages/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM contact_messages WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/rfqs', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(
+    `SELECT rfqs.*, offers.title as offer_title FROM rfqs JOIN offers ON offers.id = rfqs.offer_id ORDER BY rfqs.created_at DESC`
+  ).all();
+  return json(results);
+});
 router.put('/api/admin/companies/:id', async ({ request, env, params }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const b = await readJson(request);
@@ -491,6 +565,10 @@ router.put('/api/admin/pending-edits/:id', async ({ request, env, params }) => {
 router.get('/api/admin/requests', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const { results } = await env.DB.prepare('SELECT * FROM purchase_requests ORDER BY created_at DESC').all();
+  for (const r of results) {
+    const { results: responses } = await env.DB.prepare('SELECT company_name, phone, created_at FROM request_responses WHERE request_id=?').bind(r.id).all();
+    r.responses = responses;
+  }
   return json(results);
 });
 router.del('/api/admin/requests/:id', async ({ request, env, params }) => {
