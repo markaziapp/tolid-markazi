@@ -9,11 +9,7 @@
 <meta property="og:description" content="عرضه، خرید و درخواست خدمات صنعتی در استان مرکزی — رایگان و مستقیم بین تولیدکننده و مشتری.">
 <meta property="og:type" content="website">
 <link rel="stylesheet" href="assets/styles.css">
-<script>
-(function(){
-  var s = document.createElement('script'); s.src = 'assets/config.js'; document.head.appendChild(s);
-})();
-</script>
+<script src="assets/config.js"></script>
 </head>
 <body>
 
@@ -30,7 +26,7 @@
     <button class="tab-btn" data-tab="requests" onclick="switchTab('requests')">درخواست خرید</button>
     <button class="tab-btn" data-tab="services" onclick="switchTab('services')">درخواست خدمات</button>
     <button class="tab-btn" data-tab="companies" onclick="switchTab('companies')">واحدهای تولیدی</button>
-    <button class="tab-btn" data-tab="tools" onclick="switchTab('tools')">ابزار و فایل‌ها</button>
+    <button class="tab-btn" data-tab="tools" onclick="switchTab('tools')">فایل‌ها</button>
 </nav>
 
 <main class="container" style="padding-bottom:3rem;">
@@ -106,19 +102,8 @@
         <div id="companiesList" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
     </section>
 
-    <!-- ===================== ابزار و فایل‌ها ===================== -->
+    <!-- ===================== فایل‌ها ===================== -->
     <section id="tab-tools" class="tab-page" style="display:none;">
-        <h2 class="section-title">🧮 ابزار محاسبه بهای تمام‌شده</h2>
-        <div class="card" style="max-width:480px; padding:1rem;">
-            <div class="form-group"><label>هزینه مواد اولیه (تومان)</label><input type="number" id="calcMaterial" value="0"></div>
-            <div class="form-group"><label>هزینه دستمزد (تومان)</label><input type="number" id="calcLabor" value="0"></div>
-            <div class="form-group"><label>درصد سربار</label><input type="number" id="calcOverhead" value="0"></div>
-            <div class="form-group"><label>تعداد تولید</label><input type="number" id="calcQuantity" value="1"></div>
-            <div class="form-group"><label>درصد سود پیشنهادی</label><input type="number" id="calcProfit" value="0"></div>
-            <button class="btn btn-primary" style="width:100%;" onclick="runCalculator()">محاسبه</button>
-            <div id="calcResult" style="margin-top:1rem; font-size:0.9rem;"></div>
-        </div>
-
         <h2 class="section-title">📁 فایل‌های مفید برای تولیدکنندگان</h2>
         <div id="filesList" class="cards-grid"><div class="loading">در حال بارگذاری...</div></div>
     </section>
@@ -134,7 +119,12 @@
             <div class="step-label" id="spStepLabel">مرحله ۱ از ۲ — مشخصات محصول</div>
             <div class="form-step active" id="spStep1">
                 <div class="form-group"><label>عنوان محصول *</label><input type="text" id="spTitle" placeholder="مثلاً میلگرد A3"></div>
-                <div class="form-group"><label>نام شرکت شما *</label><input type="text" id="spCompany"></div>
+                <div class="form-group"><label>نام شرکت شما *</label>
+                    <div style="display:flex; gap:0.4rem;">
+                        <input type="text" id="spCompany" list="companiesDatalist" placeholder="جستجو یا انتخاب کنید" style="flex:1;">
+                        <a href="company.html#register" target="_blank" class="btn btn-outline btn-sm" style="white-space:nowrap;">+ ثبت واحد جدید</a>
+                    </div>
+                </div>
                 <div class="form-group"><label>شماره تماس *</label><input type="tel" id="spPhone" placeholder="09xxxxxxxxx"></div>
                 <div class="form-row">
                     <div class="form-group"><label>شهرستان *</label><select id="spCounty"></select></div>
@@ -187,7 +177,12 @@
                 </div>
                 <div class="form-group"><label>توضیحات</label><textarea id="prDescription" rows="2"></textarea></div>
                 <div class="form-row">
-                    <div class="form-group"><label>نام شرکت *</label><input type="text" id="prCompany"></div>
+                    <div class="form-group"><label>نام شرکت *</label>
+                        <div style="display:flex; gap:0.4rem;">
+                            <input type="text" id="prCompany" list="companiesDatalist" placeholder="جستجو یا انتخاب کنید" style="flex:1;">
+                            <a href="company.html#register" target="_blank" class="btn btn-outline btn-sm" style="white-space:nowrap;">+ ثبت واحد جدید</a>
+                        </div>
+                    </div>
                     <div class="form-group"><label>نام شخص مسئول</label><input type="text" id="prContactPerson"></div>
                 </div>
                 <div class="form-group"><label>شماره تماس *</label><input type="tel" id="prPhone" placeholder="09xxxxxxxxx"></div>
@@ -212,7 +207,12 @@
             <div class="form-group"><label>توضیحات</label><textarea id="srDescription" rows="2"></textarea></div>
             <div class="form-group"><label>شهرستان</label><select id="srCounty"></select></div>
             <div class="form-row">
-                <div class="form-group"><label>نام شرکت *</label><input type="text" id="srCompany"></div>
+                <div class="form-group"><label>نام شرکت *</label>
+                    <div style="display:flex; gap:0.4rem;">
+                        <input type="text" id="srCompany" list="companiesDatalist" placeholder="جستجو یا انتخاب کنید" style="flex:1;">
+                        <a href="company.html#register" target="_blank" class="btn btn-outline btn-sm" style="white-space:nowrap;">+ ثبت واحد جدید</a>
+                    </div>
+                </div>
                 <div class="form-group"><label>شماره تماس *</label><input type="tel" id="srPhone" placeholder="09xxxxxxxxx"></div>
             </div>
             <button class="btn btn-gold" style="width:100%;" onclick="submitServiceRequest()">ثبت درخواست</button>
@@ -242,11 +242,19 @@
         <div class="modal-header"><h3>درخواست تبلیغ در صفحه اصلی</h3><button class="modal-close" onclick="closeModal('adRequestModal')">&times;</button></div>
         <div class="modal-body">
             <div class="form-group"><label>نوع تبلیغ *</label>
-                <select id="adType"><option value="text">نوار نوشتاری</option><option value="image">تصویر</option><option value="video">ویدیو (لینک آپارات/یوتیوب)</option></select>
+                <select id="adType" onchange="toggleAdMediaFields()"><option value="text">نوار نوشتاری</option><option value="image">تصویر</option><option value="video">ویدیو (لینک آپارات/یوتیوب)</option></select>
             </div>
             <div class="form-group"><label>عنوان</label><input type="text" id="adTitle"></div>
             <div class="form-group"><label>متن تبلیغ</label><textarea id="adBody" rows="2"></textarea></div>
-            <div class="form-group"><label>لینک تصویر یا ویدیو (اختیاری در این مرحله)</label><input type="text" id="adMediaUrl" placeholder="بعد از هماهنگی با مدیر تکمیل می‌شود"></div>
+            <div class="form-group" id="adImageGroup">
+                <label>تصویر تبلیغ (اختیاری)</label>
+                <label class="file-upload" id="adImageLabel" for="adImage">📷 برای انتخاب تصویر کلیک کنید</label>
+                <input type="file" id="adImage" accept="image/*" style="display:none" onchange="filePreview(this,'adImageLabel','📷')">
+            </div>
+            <div class="form-group" id="adVideoGroup" style="display:none;">
+                <label>لینک ویدیو (آپارات/یوتیوب)</label>
+                <input type="text" id="adVideoUrl" placeholder="https://www.aparat.com/v/...">
+            </div>
             <div class="form-row">
                 <div class="form-group"><label>نام شما/شرکت *</label><input type="text" id="adAdvertiser"></div>
                 <div class="form-group"><label>شماره تماس *</label><input type="tel" id="adPhone" placeholder="09xxxxxxxxx"></div>
@@ -265,6 +273,7 @@
 </div>
 
 <div class="toast" id="toast"></div>
+<datalist id="companiesDatalist"></datalist>
 
 <div style="text-align:center; padding:1.5rem 0; font-size:0.75rem; color:var(--text-light);">
     یک واحد تولیدی یا شرکت تبلیغاتی هستید؟ <a href="#" onclick="openModal('adRequestModal'); return false;" style="color:var(--gold-hover); font-weight:700;">درخواست تبلیغ در صفحه اصلی</a>
