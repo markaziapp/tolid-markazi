@@ -62,8 +62,10 @@ async function doRegister() {
     if (!name || !phone || !password) { showToast('نام، شماره تماس و رمز عبور الزامی است', 'error'); return; }
     try {
         let logoUrl = '', licenseUrl = '';
-        try { logoUrl = await uploadFile(document.getElementById('regLogo')); } catch {}
-        try { licenseUrl = await uploadFile(document.getElementById('regLicense')); } catch {}
+        try { logoUrl = await uploadFile(document.getElementById('regLogo')); }
+        catch (e) { showToast('آپلود لوگو ناموفق بود: ' + e.message, 'error'); return; }
+        try { licenseUrl = await uploadFile(document.getElementById('regLicense')); }
+        catch (e) { showToast('آپلود مجوز ناموفق بود: ' + e.message, 'error'); return; }
         await apiSend('POST', '/api/company/register', {
             name, phone, password,
             county: document.getElementById('regCounty').value,
@@ -149,9 +151,7 @@ async function submitPresentation() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-    setTimeout(() => {
-        loadLookups();
-        if (getToken()) loadDashboard();
-        if (location.hash === '#register') showAuthForm('register');
-    }, 50);
+    loadLookups();
+    if (getToken()) loadDashboard();
+    if (location.hash === '#register') showAuthForm('register');
 });

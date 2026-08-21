@@ -27,6 +27,26 @@ function showToast(msg, type = '') {
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 
+function filePreview(input, labelId, icon) {
+    const label = document.getElementById(labelId);
+    if (input.files && input.files[0]) { label.textContent = '✅ ' + input.files[0].name; label.classList.add('has-file'); }
+    else { label.textContent = icon + ' برای انتخاب تصویر کلیک کنید'; label.classList.remove('has-file'); }
+}
+async function uploadFile(inputEl) {
+    if (!inputEl.files || !inputEl.files[0]) return '';
+    const fd = new FormData();
+    fd.append('file', inputEl.files[0]);
+    const res = await fetch(api('/api/upload'), { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'خطا در آپلود فایل');
+    return data.url;
+}
+function toggleAdMediaFields() {
+    const type = document.getElementById('adType').value;
+    document.getElementById('adImageGroup').style.display = type === 'image' ? 'block' : 'none';
+    document.getElementById('adVideoGroup').style.display = type === 'video' ? 'block' : 'none';
+}
+
 // ------------------------------------------------------------------
 // تب‌ها
 // ------------------------------------------------------------------
@@ -52,7 +72,7 @@ function trackView(path) {
 // ------------------------------------------------------------------
 async function loadLookups() {
     try {
-        const [counties, categories] = await Promise.all([apiGet('/api/counties'), apiGet('/api/categories')]);
+        const [counties, categories, companies] = await Promise.all([apiGet('/api/counties'), apiGet('/api/categories'), apiGet('/api/companies').catch(() => [])]);
         const countySelects = ['spCounty', 'prCounty', 'srCounty', 'offerCounty'];
         countySelects.forEach(id => {
             const el = document.getElementById(id);
@@ -69,6 +89,8 @@ async function loadLookups() {
             el.innerHTML = (keepFirst ? '<option value="">همه دسته‌ها</option>' : '') +
                 categories.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
         });
+        const dl = document.getElementById('companiesDatalist');
+        if (dl) dl.innerHTML = companies.map(c => `<option value="${esc(c.name)}"></option>`).join('');
     } catch (e) { /* در صورت خطا، فرم‌ها همچنان قابل استفاده‌اند */ }
 }
 
@@ -381,10 +403,18 @@ async function submitAdRequest() {
     const phone = document.getElementById('adPhone').value.trim();
     if (!advertiser || !phone) { showToast('نام و شماره تماس الزامی است', 'error'); return; }
     try {
+        const adType = document.getElementById('adType').value;
+        let imageUrl = '', videoEmbedUrl = '';
+        if (adType === 'image') {
+            try { imageUrl = await uploadFile(document.getElementById('adImage')); }
+            catch (e) { showToast('آپلود تصویر ناموفق بود: ' + e.message, 'error'); return; }
+        }
+        if (adType === 'video') videoEmbedUrl = document.getElementById('adVideoUrl').value.trim();
         await apiPost('/api/ads', {
-            adType: document.getElementById('adType').value,
+            adType,
             title: document.getElementById('adTitle').value,
             bodyText: document.getElementById('adBody').value,
+            imageUrl, videoEmbedUrl,
             advertiserName: advertiser, advertiserPhone: phone,
         });
         showToast('درخواست تبلیغ شما ثبت شد؛ به‌زودی با شما تماس گرفته می‌شود', 'success');
@@ -428,28 +458,8 @@ function showRequestDetails(id) {
 }
 
 // ------------------------------------------------------------------
-// ابزار محاسبه بهای تمام‌شده
-// ------------------------------------------------------------------
-async function runCalculator() {
-    try {
-        const result = await apiPost('/api/calculate-cost', {
-            materialCost: document.getElementById('calcMaterial').value,
-            laborCost: document.getElementById('calcLabor').value,
-            overheadPercent: document.getElementById('calcOverhead').value,
-            quantity: document.getElementById('calcQuantity').value,
-            profitPercent: document.getElementById('calcProfit').value,
-        });
-        document.getElementById('calcResult').innerHTML = `
-            <div class="stat-cards">
-                <div class="stat-card"><div class="num">${Math.round(result.unitCost).toLocaleString('fa-IR')}</div><div class="label">بهای تمام‌شده هر واحد (تومان)</div></div>
-                <div class="stat-card"><div class="num">${Math.round(result.suggestedPrice).toLocaleString('fa-IR')}</div><div class="label">قیمت پیشنهادی فروش (تومان)</div></div>
-            </div>`;
-    } catch (e) { showToast(e.message, 'error'); }
-}
-
-// ------------------------------------------------------------------
 // شروع
 // ------------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
-    setTimeout(() => { loadLookups(); loadHome(); trackView('/home'); }, 50);
+    loadLookups(); loadHome(); trackView('/home');
 });
