@@ -294,9 +294,9 @@ router.post('/api/company/register', async ({ request, env }) => {
   if (exists) return error('این شماره قبلاً ثبت شده؛ از فرم ورود استفاده کنید', 409);
   const pw = await hashPassword(b.password);
   const res = await env.DB.prepare(
-    `INSERT INTO companies (name, phone, password_hash, role, province, profile_completed)
-     VALUES (?,?,?,?,?,0)`
-  ).bind(b.name, b.phone, pw, b.role, 'مرکزی').run();
+    `INSERT INTO companies (name, phone, password_hash, role, province, county, profile_completed)
+     VALUES (?,?,?,?,?,?,0)`
+  ).bind(b.name, b.phone, pw, b.role, 'مرکزی', '').run();
   const token = await signToken({ role: 'company', companyId: res.meta.last_row_id }, env.JWT_SECRET);
   return json({ id: res.meta.last_row_id, token, message: 'ثبت‌نام شما انجام شد.' }, 201);
 });
@@ -653,7 +653,100 @@ router.get('/api/admin/analytics', async ({ request, env }) => {
 });
 
 // ------------------------------------------------------------------
-// آپلود فایل به GitHub (لوگو، مجوز، عکس تبلیغ، فایل‌های مدیر)
+// ابزار تشخیصی: بررسی اینکه کدام متغیر محیطی واقعاً تنظیم شده (بدون افشای مقدار)
+// ------------------------------------------------------------------
+router.get('/api/admin/env-check', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  return json({
+    GITHUB_TOKEN: !!env.GITHUB_TOKEN,
+    GITHUB_OWNER: !!env.GITHUB_OWNER,
+    GITHUB_UPLOADS_REPO: !!env.GITHUB_UPLOADS_REPO,
+    GITHUB_BRANCH: !!env.GITHUB_BRANCH,
+    JWT_SECRET: !!env.JWT_SECRET,
+    SETUP_KEY: !!env.SETUP_KEY,
+    GITHUB_OWNER_value: env.GITHUB_OWNER || null,
+    GITHUB_UPLOADS_REPO_value: env.GITHUB_UPLOADS_REPO || null,
+    GITHUB_BRANCH_value: env.GITHUB_BRANCH || null,
+  });
+});
+
+// ------------------------------------------------------------------
+// پشتیبان‌گیری / بازیابی / پاک‌سازی داده‌ها
+// ------------------------------------------------------------------
+const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
+  'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
+  'calculator_settings', 'contact_messages'];
+
+router.get('/api/admin/backup', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const dump = { created_at: new Date().toISOString(), tables: {} };
+  for (const t of BACKUP_TABLES) {
+    const { results } = await env.DB.prepare(`SELECT * FROM ${t}`).all();
+    dump.tables[t] = results;
+  }
+  return json(dump);
+});
+
+router.post('/api/admin/restore', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.tables) return error('فایل پشتیبان نامعتبر است');
+  for (const t of BACKUP_TABLES) {
+    const rows = b.tables[t];
+    if (!Array.isArray(rows) || !rows.length) continue;
+    await env.DB.prepare(`DELETE FROM ${t}`).run();
+    for (const row of rows) {
+      const cols = Object.keys(row);
+      const placeholders = cols.map(() => '?').join(',');
+      await env.DB.prepare(`INSERT INTO ${t} (${cols.join(',')}) VALUES (${placeholders})`)
+        .bind(...cols.map(c => row[c])).run();
+    }
+  }
+  return json({ ok: true, message: 'بازیابی انجام شد.' });
+});
+
+router.post('/api/admin/wipe', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (b.confirm !== 'پاک کن') return error('برای تایید، عبارت درخواست‌شده را دقیق ارسال کنید');
+  const wipeTables = ['offers', 'purchase_requests', 'request_responses', 'rfqs', 'service_requests',
+    'problems', 'ads', 'pending_edits', 'contact_messages', 'companies', 'page_views', 'login_attempts'];
+  for (const t of wipeTables) {
+    await env.DB.prepare(`DELETE FROM ${t}`).run();
+  }
+  return json({ ok: true, message: 'همه اطلاعات آزمایشی پاک شد.' });
+});
+
+// ------------------------------------------------------------------
+// خلاصه اعلان‌ها برای پنل مدیریت (نشان قرمز روی تب‌ها)
+// ------------------------------------------------------------------
+router.get('/api/admin/notifications', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const pendingEdits = await env.DB.prepare(`SELECT COUNT(*) c FROM pending_edits WHERE status='pending'`).first();
+  const unreadMessages = await env.DB.prepare(`SELECT COUNT(*) c FROM contact_messages WHERE status='خوانده‌نشده'`).first();
+  const pendingAds = await env.DB.prepare(`SELECT COUNT(*) c FROM ads WHERE status='pending'`).first();
+  const unverifiedCompanies = await env.DB.prepare(`SELECT COUNT(*) c FROM companies WHERE verified=0`).first();
+  const pendingPresentations = await env.DB.prepare(`SELECT COUNT(*) c FROM companies WHERE presentation_status='pending'`).first();
+  return json({
+    pendingEdits: pendingEdits.c, unreadMessages: unreadMessages.c, pendingAds: pendingAds.c,
+    unverifiedCompanies: unverifiedCompanies.c, pendingPresentations: pendingPresentations.c,
+    total: pendingEdits.c + unreadMessages.c + pendingAds.c + pendingPresentations.c,
+  });
+});
+
+// اعلان‌های تازه برای پنل خود کاربر (چیزهای جدید از آخرین بازدید)
+router.get('/api/company/notifications', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const cid = auth.companyId;
+  const latestRfq = await env.DB.prepare(
+    `SELECT MAX(rfqs.created_at) as t FROM rfqs JOIN offers ON offers.id=rfqs.offer_id WHERE offers.company_id=?`
+  ).bind(cid).first();
+  const latestResponse = await env.DB.prepare(
+    `SELECT MAX(rr.created_at) as t FROM request_responses rr JOIN purchase_requests pr ON pr.id=rr.request_id WHERE pr.company_id=?`
+  ).bind(cid).first();
+  return json({ latestRfqAt: latestRfq.t, latestResponseAt: latestResponse.t });
+});
 // چون R2 در دسترس نیست، فایل‌ها در یک ریپازیتوری جدا روی GitHub ذخیره
 // و از طریق jsDelivr (CDN رایگان) سرو می‌شوند.
 // ------------------------------------------------------------------
