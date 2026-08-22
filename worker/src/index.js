@@ -301,6 +301,15 @@ router.post('/api/company/register', async ({ request, env }) => {
   return json({ id: res.meta.last_row_id, token, message: 'ثبت‌نام شما انجام شد.' }, 201);
 });
 
+// نمایش سریع نام کاربر برای بالای صفحه (بدون بار سنگین داشبورد کامل)
+router.get('/api/company/me', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const company = await env.DB.prepare('SELECT id, name, role, verified FROM companies WHERE id=?').bind(auth.companyId).first();
+  if (!company) return error('حساب یافت نشد', 404);
+  return json(company);
+});
+
 router.post('/api/company/login', async ({ request, env }) => {
   const b = await readJson(request);
   const ip = clientIp(request);
@@ -493,6 +502,8 @@ router.put('/api/admin/offers/:id', async ({ request, env, params }) => {
 });
 router.del('/api/admin/offers/:id', async ({ request, env, params }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM rfqs WHERE offer_id=?').bind(params.id).run();
+  await env.DB.prepare(`DELETE FROM pending_edits WHERE entity_type='offer' AND entity_id=?`).bind(params.id).run();
   await env.DB.prepare('DELETE FROM offers WHERE id=?').bind(params.id).run();
   return json({ ok: true });
 });
@@ -573,6 +584,7 @@ router.get('/api/admin/requests', async ({ request, env }) => {
 });
 router.del('/api/admin/requests/:id', async ({ request, env, params }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM request_responses WHERE request_id=?').bind(params.id).run();
   await env.DB.prepare('DELETE FROM purchase_requests WHERE id=?').bind(params.id).run();
   return json({ ok: true });
 });
@@ -691,10 +703,14 @@ router.post('/api/admin/restore', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const b = await readJson(request);
   if (!b.tables) return error('فایل پشتیبان نامعتبر است');
+  // ابتدا جدول‌ها را از انتهای زنجیره وابستگی به ابتدا پاک می‌کنیم (فرزند قبل از والد)
+  for (const t of [...BACKUP_TABLES].reverse()) {
+    if (Array.isArray(b.tables[t])) await env.DB.prepare(`DELETE FROM ${t}`).run();
+  }
+  // سپس از والد به فرزند دوباره پر می‌کنیم
   for (const t of BACKUP_TABLES) {
     const rows = b.tables[t];
     if (!Array.isArray(rows) || !rows.length) continue;
-    await env.DB.prepare(`DELETE FROM ${t}`).run();
     for (const row of rows) {
       const cols = Object.keys(row);
       const placeholders = cols.map(() => '?').join(',');
@@ -709,8 +725,8 @@ router.post('/api/admin/wipe', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const b = await readJson(request);
   if (b.confirm !== 'پاک کن') return error('برای تایید، عبارت درخواست‌شده را دقیق ارسال کنید');
-  const wipeTables = ['offers', 'purchase_requests', 'request_responses', 'rfqs', 'service_requests',
-    'problems', 'ads', 'pending_edits', 'contact_messages', 'companies', 'page_views', 'login_attempts'];
+  const wipeTables = ['request_responses', 'rfqs', 'pending_edits', 'contact_messages', 'offers',
+    'purchase_requests', 'service_requests', 'problems', 'ads', 'companies', 'page_views', 'login_attempts'];
   for (const t of wipeTables) {
     await env.DB.prepare(`DELETE FROM ${t}`).run();
   }
