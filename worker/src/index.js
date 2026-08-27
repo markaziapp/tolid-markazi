@@ -334,6 +334,7 @@ router.get('/api/company/dashboard', async ({ request, env }) => {
   const respCount = await env.DB.prepare('SELECT COUNT(*) c FROM request_responses WHERE company_id=?').bind(cid).first();
   const myRequestsCount = await env.DB.prepare('SELECT COUNT(*) c FROM purchase_requests WHERE company_id=?').bind(cid).first();
   const myServiceCount = await env.DB.prepare('SELECT COUNT(*) c FROM service_requests WHERE company_id=?').bind(cid).first();
+  const { results: myServices } = await env.DB.prepare('SELECT * FROM service_requests WHERE company_id=? ORDER BY created_at DESC').bind(cid).all();
   const { results: myOffers } = await env.DB.prepare('SELECT id, title, price, active, verified, views FROM offers WHERE company_id=? ORDER BY created_at DESC').bind(cid).all();
 
   // درخواست‌های خرید من + پاسخ‌هایی که تأمین‌کننده‌ها داده‌اند (با مشخصات تماس)
@@ -360,7 +361,7 @@ router.get('/api/company/dashboard', async ({ request, env }) => {
   return json({
     company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_views', 'presentation_status', 'profile_completed', 'county', 'category', 'products', 'capacity']),
     stats: { offers: offersCount.c, rfqs: rfqCount.c, responses: respCount.c, profileViews: company.profile_views, myRequests: myRequestsCount.c, myServices: myServiceCount.c },
-    myOffers, myRequests, myRfqsSent, rfqsReceived, monthlyViews,
+    myOffers, myRequests, myServices, myRfqsSent, rfqsReceived, monthlyViews,
   });
 });
 
@@ -387,6 +388,50 @@ router.put('/api/company/offers/:id', async ({ request, env, params }) => {
     `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('offer', ?, ?, ?)`
   ).bind(params.id, auth.companyId, JSON.stringify(changes)).run();
   return json({ ok: true, message: 'تغییرات ثبت شد و پس از تایید مدیر اعمال می‌شود.' }, 201);
+});
+
+router.del('/api/company/offers/:id', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const offer = await env.DB.prepare('SELECT * FROM offers WHERE id=? AND company_id=?').bind(params.id, auth.companyId).first();
+  if (!offer) return error('این آگهی متعلق به شما نیست', 403);
+  await env.DB.prepare('DELETE FROM rfqs WHERE offer_id=?').bind(params.id).run();
+  await env.DB.prepare(`DELETE FROM pending_edits WHERE entity_type='offer' AND entity_id=?`).bind(params.id).run();
+  await env.DB.prepare('DELETE FROM offers WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.put('/api/company/service-requests/:id', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const item = await env.DB.prepare('SELECT * FROM service_requests WHERE id=? AND company_id=?').bind(params.id, auth.companyId).first();
+  if (!item) return error('این درخواست متعلق به شما نیست', 403);
+  const b = await readJson(request);
+  const changes = pick(b, ['role_title', 'service_category', 'description', 'urgency', 'status']);
+  await env.DB.prepare(
+    `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('service_request', ?, ?, ?)`
+  ).bind(params.id, auth.companyId, JSON.stringify(changes)).run();
+  return json({ ok: true, message: 'تغییرات ثبت شد و پس از تایید مدیر اعمال می‌شود.' }, 201);
+});
+
+router.del('/api/company/service-requests/:id', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const item = await env.DB.prepare('SELECT * FROM service_requests WHERE id=? AND company_id=?').bind(params.id, auth.companyId).first();
+  if (!item) return error('این درخواست متعلق به شما نیست', 403);
+  await env.DB.prepare(`DELETE FROM pending_edits WHERE entity_type='service_request' AND entity_id=?`).bind(params.id).run();
+  await env.DB.prepare('DELETE FROM service_requests WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.del('/api/company/requests/:id', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('نیاز به ورود', 401);
+  const item = await env.DB.prepare('SELECT * FROM purchase_requests WHERE id=? AND company_id=?').bind(params.id, auth.companyId).first();
+  if (!item) return error('این درخواست متعلق به شما نیست', 403);
+  await env.DB.prepare('DELETE FROM request_responses WHERE request_id=?').bind(params.id).run();
+  await env.DB.prepare('DELETE FROM purchase_requests WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
 });
 
 router.post('/api/company/presentation', async ({ request, env }) => {
@@ -563,7 +608,7 @@ router.put('/api/admin/pending-edits/:id', async ({ request, env, params }) => {
     const changes = JSON.parse(edit.changes_json);
     const cols = Object.keys(changes);
     if (cols.length) {
-      const table = edit.entity_type === 'company' ? 'companies' : 'offers';
+      const table = { company: 'companies', offer: 'offers', service_request: 'service_requests' }[edit.entity_type] || 'offers';
       await env.DB.prepare(`UPDATE ${table} SET ${cols.map(c => c + '=?').join(',')} WHERE id=?`)
         .bind(...cols.map(c => changes[c]), edit.entity_id).run();
     }
