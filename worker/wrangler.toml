@@ -3,20 +3,24 @@ main = "src/index.js"
 compatibility_date = "2024-09-01"
 
 # پس از ساخت دیتابیس، مقدار database_id را از داشبورد Cloudflare کپی و جایگزین کنید
-# (اگر با روش داشبورد/بدون کدنویسی پیش می‌روید، این Binding را از تب Settings > Bindings
-#  همان Worker هم می‌توانید اضافه کنید و نیازی به ویرایش این فایل نیست)
+# (اگر از قبل Binding را از تب Settings > Bindings همان Worker اضافه کرده‌اید، نیازی
+#  به تغییر این خط نیست — Cloudflare خودش database_id واقعی را از آن‌جا می‌خواند)
 [[d1_databases]]
 binding = "DB"
 database_name = "tolid-markazi-db"
-database_id = "11bc5013-36c8-4c41-9cd1-c68f7f90f0d3"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 
-# توجه: به‌جای Cloudflare R2 (که در برخی مناطق در دسترس نیست)، فایل‌ها روی یک
-# ریپازیتوری جداگانه در GitHub ذخیره می‌شوند. این مقادیر را با Add variable/Secret
-# در تب Settings همین Worker تنظیم کنید (نیازی به ویرایش این فایل نیست):
+# این‌ها متغیرهای غیرمحرمانه‌اند و همین‌جا نوشته می‌شوند تا با هر دیپلوی جدید
+# (هر بار که چیزی در GitHub تغییر می‌کند) پاک نشوند. اگر مقدار واقعی‌تان با
+# نمونه‌های زیر فرق دارد، همین‌جا اصلاحش کنید — نیازی به داشبورد Cloudflare نیست.
+[vars]
+GITHUB_OWNER = "markaziapp"
+GITHUB_UPLOADS_REPO = "tolid-markazi-uploads"
+GITHUB_BRANCH = "main"
+
+# فقط این ۳ مورد باقی می‌مانند که باید از داشبورد Cloudflare (Settings > Variables
+# and Secrets، نوع Secret) تنظیم شوند — چون محرمانه‌اند و نباید در کد/GitHub باشند:
 #
-#   GITHUB_TOKEN         -> یک Personal Access Token از GitHub با دسترسی نوشتن به ریپازیتوری (Secret)
-#   GITHUB_OWNER         -> نام کاربری یا سازمان GitHub شما (Variable)
-#   GITHUB_UPLOADS_REPO  -> نام ریپازیتوری مخصوص فایل‌ها، مثلاً tolid-markazi-uploads (Variable)
-#   GITHUB_BRANCH        -> نام شاخه، معمولاً main (Variable)
-#   JWT_SECRET           -> یک رشته تصادفی طولانی برای امضای توکن‌ها (Secret)
-#   SETUP_KEY            -> یک کلید یک‌بارمصرف برای ساخت اولین حساب مدیر (Secret)
+#   GITHUB_TOKEN  -> Personal Access Token از GitHub با دسترسی Contents: Read and write
+#   JWT_SECRET    -> یک رشته تصادفی طولانی برای امضای توکن‌ها
+#   SETUP_KEY     -> یک کلید یک‌بارمصرف برای ساخت اولین حساب مدیر
