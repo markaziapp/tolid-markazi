@@ -7,8 +7,8 @@ compatibility_date = "2024-09-01"
 #  به تغییر این خط نیست — Cloudflare خودش database_id واقعی را از آن‌جا می‌خواند)
 [[d1_databases]]
 binding = "DB"
-database_name = "tolid-markazi-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_name = "tolid-markazi"
+database_id = "11bc5013-36c8-4c41-9cd1-c68f7f90f0d3"
 
 # این‌ها متغیرهای غیرمحرمانه‌اند و همین‌جا نوشته می‌شوند تا با هر دیپلوی جدید
 # (هر بار که چیزی در GitHub تغییر می‌کند) پاک نشوند. اگر مقدار واقعی‌تان با
