@@ -359,7 +359,7 @@ router.get('/api/company/dashboard', async ({ request, env }) => {
      WHERE path LIKE ('%/company/' || ? || '%') GROUP BY month ORDER BY month DESC LIMIT 6`
   ).bind(cid).all();
   return json({
-    company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_views', 'presentation_status', 'profile_completed', 'county', 'category', 'products', 'capacity']),
+    company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_views', 'presentation_status', 'profile_completed', 'county', 'category', 'products', 'capacity', 'latitude', 'longitude']),
     stats: { offers: offersCount.c, rfqs: rfqCount.c, responses: respCount.c, profileViews: company.profile_views, myRequests: myRequestsCount.c, myServices: myServiceCount.c },
     myOffers, myRequests, myServices, myRfqsSent, rfqsReceived, monthlyViews,
   });
@@ -369,7 +369,7 @@ router.put('/api/company/profile', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('نیاز به ورود', 401);
   const b = await readJson(request);
-  const changes = pick(b, ['name', 'county', 'category', 'products', 'capacity', 'logo_url', 'license_url']);
+  const changes = pick(b, ['name', 'county', 'category', 'products', 'capacity', 'logo_url', 'license_url', 'latitude', 'longitude']);
   await env.DB.prepare(
     `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('company', ?, ?, ?)`
   ).bind(auth.companyId, auth.companyId, JSON.stringify(changes)).run();
