@@ -39,6 +39,10 @@ router.get('/api/categories', async ({ env }) => {
   const { results } = await env.DB.prepare('SELECT * FROM categories WHERE active=1').all();
   return json(results);
 });
+router.get('/api/industrial-zones', async ({ env }) => {
+  const { results } = await env.DB.prepare('SELECT id, name, county FROM industrial_zones ORDER BY county, name').all();
+  return json(results);
+});
 
 // ------------------------------------------------------------------
 // عمومی: فهرست واحدهای تولیدی
@@ -293,10 +297,17 @@ router.post('/api/company/register', async ({ request, env }) => {
   const exists = await env.DB.prepare('SELECT id FROM companies WHERE phone=?').bind(b.phone).first();
   if (exists) return error('این شماره قبلاً ثبت شده؛ از فرم ورود استفاده کنید', 409);
   const pw = await hashPassword(b.password);
+  // موقعیت (نقشه یا شهرک صنعتی انتخاب‌شده) همین‌جا مستقیم ثبت می‌شود؛ چون بخشی از
+  // اطلاعات اولیهٔ خودِ کاربر است، نیازی به تایید مدیر برای اعمال‌شدن ندارد
   const res = await env.DB.prepare(
-    `INSERT INTO companies (name, phone, password_hash, role, province, county, profile_completed)
-     VALUES (?,?,?,?,?,?,0)`
-  ).bind(b.name, b.phone, pw, b.role, 'مرکزی', '').run();
+    `INSERT INTO companies (name, phone, password_hash, role, province, county, latitude, longitude, industrial_zone, profile_completed)
+     VALUES (?,?,?,?,?,?,?,?,?,0)`
+  ).bind(
+    b.name, b.phone, pw, b.role, 'مرکزی', b.county || '',
+    (typeof b.latitude === 'number') ? b.latitude : null,
+    (typeof b.longitude === 'number') ? b.longitude : null,
+    b.industrialZone || null
+  ).run();
   const token = await signToken({ role: 'company', companyId: res.meta.last_row_id }, env.JWT_SECRET);
   return json({ id: res.meta.last_row_id, token, message: 'ثبت‌نام شما انجام شد.' }, 201);
 });
@@ -359,7 +370,7 @@ router.get('/api/company/dashboard', async ({ request, env }) => {
      WHERE path LIKE ('%/company/' || ? || '%') GROUP BY month ORDER BY month DESC LIMIT 6`
   ).bind(cid).all();
   return json({
-    company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_views', 'presentation_status', 'profile_completed', 'county', 'category', 'products', 'capacity', 'latitude', 'longitude']),
+    company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_views', 'presentation_status', 'profile_completed', 'county', 'category', 'products', 'capacity', 'latitude', 'longitude', 'industrial_zone']),
     stats: { offers: offersCount.c, rfqs: rfqCount.c, responses: respCount.c, profileViews: company.profile_views, myRequests: myRequestsCount.c, myServices: myServiceCount.c },
     myOffers, myRequests, myServices, myRfqsSent, rfqsReceived, monthlyViews,
   });
@@ -369,7 +380,7 @@ router.put('/api/company/profile', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('نیاز به ورود', 401);
   const b = await readJson(request);
-  const changes = pick(b, ['name', 'county', 'category', 'products', 'capacity', 'logo_url', 'license_url', 'latitude', 'longitude']);
+  const changes = pick(b, ['name', 'county', 'category', 'products', 'capacity', 'logo_url', 'license_url', 'latitude', 'longitude', 'industrial_zone']);
   await env.DB.prepare(
     `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('company', ?, ?, ?)`
   ).bind(auth.companyId, auth.companyId, JSON.stringify(changes)).run();
@@ -586,7 +597,7 @@ router.get('/api/admin/rfqs', async ({ request, env }) => {
 router.put('/api/admin/companies/:id', async ({ request, env, params }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const b = await readJson(request);
-  const cols = ['name', 'county', 'category', 'products', 'capacity', 'verified', 'active', 'presentation_status'];
+  const cols = ['name', 'county', 'category', 'products', 'capacity', 'verified', 'active', 'presentation_status', 'latitude', 'longitude', 'industrial_zone'];
   const setCols = cols.filter(c => b[c] !== undefined);
   if (!setCols.length) return error('چیزی برای تغییر ارسال نشده');
   await env.DB.prepare(`UPDATE companies SET ${setCols.map(c => c + '=?').join(',')} WHERE id=?`)
