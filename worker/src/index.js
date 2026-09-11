@@ -347,20 +347,20 @@ router.get('/api/companies/:id/reviews', async ({ env, params }) => {
 // ------------------------------------------------------------------
 // اعلان‌های داخل‌برنامه‌ای شرکت (زنگوله)
 // ------------------------------------------------------------------
-router.get('/api/company/notifications', async ({ request, env }) => {
+router.get('/api/company/inbox', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
   const { results } = await env.DB.prepare('SELECT * FROM notifications WHERE company_id=? ORDER BY id DESC LIMIT 50').bind(auth.companyId).all();
   const unread = await env.DB.prepare('SELECT COUNT(*) c FROM notifications WHERE company_id=? AND is_read=0').bind(auth.companyId).first();
   return json({ items: results, unread: unread.c });
 });
-router.post('/api/company/notifications/:id/read', async ({ request, env, params }) => {
+router.post('/api/company/inbox/:id/read', async ({ request, env, params }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
   await env.DB.prepare('UPDATE notifications SET is_read=1 WHERE id=? AND company_id=?').bind(params.id, auth.companyId).run();
   return json({ ok: true });
 });
-router.post('/api/company/notifications/read-all', async ({ request, env }) => {
+router.post('/api/company/inbox/read-all', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
   await env.DB.prepare('UPDATE notifications SET is_read=1 WHERE company_id=?').bind(auth.companyId).run();
@@ -1079,10 +1079,13 @@ router.get('/api/admin/notifications', async ({ request, env }) => {
   const pendingAds = await env.DB.prepare(`SELECT COUNT(*) c FROM ads WHERE status='pending'`).first();
   const unverifiedCompanies = await env.DB.prepare(`SELECT COUNT(*) c FROM companies WHERE verified=0`).first();
   const pendingPresentations = await env.DB.prepare(`SELECT COUNT(*) c FROM companies WHERE presentation_status='pending'`).first();
+  const pendingReviews = await env.DB.prepare(`SELECT COUNT(*) c FROM reviews WHERE status='pending'`).first();
+  const pendingReports = await env.DB.prepare(`SELECT COUNT(*) c FROM message_reports WHERE status='pending'`).first();
   return json({
     pendingEdits: pendingEdits.c, unreadMessages: unreadMessages.c, pendingAds: pendingAds.c,
     unverifiedCompanies: unverifiedCompanies.c, pendingPresentations: pendingPresentations.c,
-    total: pendingEdits.c + unreadMessages.c + pendingAds.c + pendingPresentations.c,
+    pendingReviews: pendingReviews.c, pendingReports: pendingReports.c,
+    total: pendingEdits.c + unreadMessages.c + pendingAds.c + pendingPresentations.c + pendingReviews.c + pendingReports.c,
   });
 });
 
