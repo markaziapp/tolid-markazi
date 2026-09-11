@@ -752,6 +752,71 @@ router.del('/api/admin/offers/:id', async ({ request, env, params }) => {
   return json({ ok: true });
 });
 
+// ------------------------------------------------------------------
+// مدیریت: دسته‌بندی‌ها، شهرستان‌ها، شهرک/ناحیه‌های صنعتی
+// ------------------------------------------------------------------
+router.get('/api/admin/categories', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM categories ORDER BY name').all();
+  return json(results);
+});
+router.post('/api/admin/categories', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.name) return error('نام دسته الزامی است');
+  await env.DB.prepare('INSERT OR IGNORE INTO categories (name, active) VALUES (?,?)').bind(b.name.trim(), b.active ?? 1).run();
+  return json({ ok: true }, 201);
+});
+router.del('/api/admin/categories/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM categories WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/counties', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM counties ORDER BY name').all();
+  return json(results);
+});
+router.post('/api/admin/counties', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.name) return error('نام شهرستان الزامی است');
+  await env.DB.prepare('INSERT INTO counties (name, province_id) VALUES (?,?)').bind(b.name.trim(), b.province_id || 1).run();
+  return json({ ok: true }, 201);
+});
+router.del('/api/admin/counties/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM counties WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+// شهرک‌ها/نواحی صنعتی — همان فهرستی که در نقشهٔ ثبت‌نام کارخانه‌ها استفاده می‌شود
+router.get('/api/admin/industrial-zones', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM industrial_zones ORDER BY county, name').all();
+  return json(results);
+});
+router.post('/api/admin/industrial-zones', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.name || !b.county) return error('نام شهرک و شهرستان الزامی است');
+  await env.DB.prepare('INSERT INTO industrial_zones (name, county) VALUES (?,?)').bind(b.name.trim(), b.county).run();
+  return json({ ok: true }, 201);
+});
+router.put('/api/admin/industrial-zones/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  await env.DB.prepare('UPDATE industrial_zones SET name=?, county=? WHERE id=?')
+    .bind(b.name?.trim(), b.county, params.id).run();
+  return json({ ok: true });
+});
+router.del('/api/admin/industrial-zones/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM industrial_zones WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
 router.get('/api/admin/companies', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const { results } = await env.DB.prepare('SELECT * FROM companies ORDER BY created_at DESC').all();
