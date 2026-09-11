@@ -23,6 +23,17 @@ async function requireCompany(request, env) {
 function clientIp(request) {
   return request.headers.get('CF-Connecting-IP') || '';
 }
+function computeBadges(c) {
+  const badges = [];
+  try {
+    const created = new Date((c.created_at || '').replace(' ', 'T') + 'Z');
+    const years = Math.floor((Date.now() - created.getTime()) / (365 * 24 * 3600 * 1000));
+    if (years >= 1) badges.push(`${years} سال فعالیت`);
+  } catch {}
+  if ((c.deals_count || 0) >= 5) badges.push(`${c.deals_count} معاملهٔ موفق`);
+  if ((c.rating_count || 0) >= 3 && (c.rating_avg || 0) >= 4) badges.push('محبوب کاربران');
+  return badges;
+}
 
 // ------------------------------------------------------------------
 // عمومی: استان/شهرستان/دسته‌بندی
@@ -50,13 +61,14 @@ router.get('/api/industrial-zones', async ({ env }) => {
 router.get('/api/companies', async ({ env, url }) => {
   const q = url.searchParams.get('q') || '';
   const role = url.searchParams.get('role') || '';
-  let sql = `SELECT id, name, county, province, category, products, capacity, role, verified, active, presentation_url, presentation_type, presentation_status
+  let sql = `SELECT id, name, county, province, category, products, capacity, role, verified, active, presentation_url, presentation_type, presentation_status, created_at, rating_avg, rating_count, deals_count
              FROM companies WHERE active=1`;
   const binds = [];
   if (q) { sql += ` AND name LIKE ?`; binds.push(`%${q}%`); }
   if (role) { sql += ` AND role = ?`; binds.push(role); }
   sql += ` ORDER BY verified DESC, created_at DESC LIMIT 100`;
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
+  results.forEach(c => { c.badges = computeBadges(c); });
   return json(results);
 });
 
@@ -65,6 +77,7 @@ router.get('/api/companies/:id', async ({ env, params }) => {
   if (!c) return error('یافت نشد', 404);
   await env.DB.prepare('UPDATE companies SET profile_views = profile_views + 1 WHERE id=?').bind(params.id).run();
   delete c.password_hash;
+  c.badges = computeBadges(c);
   return json(c);
 });
 
@@ -130,6 +143,21 @@ router.post('/api/rfqs', async ({ request, env }) => {
   return json({ id: res.meta.last_row_id }, 201);
 });
 
+// تطبیق هوشمند: وقتی درخواستی ثبت می‌شود، به شرکت‌های مرتبط همان شهرستان اعلان داخلی می‌فرستد
+// نکته: فقط اعلان داخل‌برنامه‌ای می‌سازد؛ ارسال پیامک واقعی هنوز وصل نشده (نیاز به اطلاعات سرویس پیامک شما دارد)
+async function notifyMatchingCompanies(env, { role, county, title, body, link, excludeCompanyId }) {
+  let sql = `SELECT id FROM companies WHERE active=1 AND role=?`;
+  const binds = [role];
+  if (county) { sql += ' AND county=?'; binds.push(county); }
+  const { results } = await env.DB.prepare(sql).bind(...binds).all();
+  for (const c of results) {
+    if (excludeCompanyId && c.id === excludeCompanyId) continue;
+    await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
+      .bind(c.id, 'match_request', title, body || '', link || '').run();
+  }
+  return results.length;
+}
+
 // ------------------------------------------------------------------
 // عمومی: درخواست‌های خرید
 // ------------------------------------------------------------------
@@ -154,6 +182,14 @@ router.post('/api/requests', async ({ request, env }) => {
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(company.id, b.product, b.specs || '', b.quantity, b.unit || 'تن', company.province || 'مرکزی', b.county || company.county || '',
          b.deadline || '', b.priceRange || '', b.payment || 'نقد', b.description || '', company.name, '', company.phone, b.status || 'معمولی').run();
+  const reqCounty = b.county || company.county || '';
+  notifyMatchingCompanies(env, {
+    role: 'producer', county: reqCounty,
+    title: `درخواست خرید جدید: ${b.product}`,
+    body: `${b.quantity} ${b.unit || ''} در ${reqCounty || 'استان مرکزی'}`,
+    link: `#request-${res.meta.last_row_id}`,
+    excludeCompanyId: company.id,
+  }).catch(() => {});
   return json({ id: res.meta.last_row_id }, 201);
 });
 
@@ -187,7 +223,159 @@ router.post('/api/service-requests', async ({ request, env }) => {
      VALUES (?,?,?,?,?,?,?,?,?,?)`
   ).bind(company.id, b.roleTitle, b.serviceCategory || '', b.description || '', company.province || 'مرکزی', b.county || company.county || '',
          company.name, '', company.phone, b.urgency || 'معمولی').run();
+  const reqCounty2 = b.county || company.county || '';
+  notifyMatchingCompanies(env, {
+    role: 'service', county: reqCounty2,
+    title: `درخواست خدمات جدید: ${b.roleTitle}`,
+    body: `${b.serviceCategory || ''} در ${reqCounty2 || 'استان مرکزی'}`,
+    link: `#service-request-${res.meta.last_row_id}`,
+    excludeCompanyId: company.id,
+  }).catch(() => {});
   return json({ id: res.meta.last_row_id }, 201);
+});
+
+// ------------------------------------------------------------------
+// چت داخلی بین دو شرکت (خریدار/فروشنده) — بدون نیاز به واتس‌اپ
+// ------------------------------------------------------------------
+router.post('/api/chat/start', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای شروع گفتگو ابتدا وارد شوید', 401);
+  const b = await readJson(request);
+  const otherId = parseInt(b.companyId);
+  if (!otherId || otherId === auth.companyId) return error('شرکت مقصد نامعتبر است');
+  const other = await env.DB.prepare('SELECT id FROM companies WHERE id=? AND active=1').bind(otherId).first();
+  if (!other) return error('شرکت مقصد یافت نشد', 404);
+  const a = Math.min(auth.companyId, otherId), bId = Math.max(auth.companyId, otherId);
+  let convo = await env.DB.prepare('SELECT * FROM conversations WHERE company_a_id=? AND company_b_id=?').bind(a, bId).first();
+  if (!convo) {
+    const res = await env.DB.prepare(
+      `INSERT INTO conversations (company_a_id, company_b_id, related_type, related_id) VALUES (?,?,?,?)`
+    ).bind(a, bId, b.relatedType || null, b.relatedId || null).run();
+    convo = { id: res.meta.last_row_id };
+  }
+  return json({ conversationId: convo.id });
+});
+
+router.get('/api/chat/conversations', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const { results } = await env.DB.prepare(`
+    SELECT c.*, CASE WHEN c.company_a_id=? THEN c.company_b_id ELSE c.company_a_id END AS other_id
+    FROM conversations c WHERE c.company_a_id=? OR c.company_b_id=?
+    ORDER BY COALESCE(c.last_message_at, c.created_at) DESC
+  `).bind(auth.companyId, auth.companyId, auth.companyId).all();
+  for (const c of results) {
+    const other = await env.DB.prepare('SELECT id, name FROM companies WHERE id=?').bind(c.other_id).first();
+    c.other_name = other?.name || 'کاربر حذف‌شده';
+    const lastMsg = await env.DB.prepare('SELECT body FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1').bind(c.id).first();
+    c.last_message = lastMsg?.body || '';
+    const read = await env.DB.prepare('SELECT last_read_at FROM conversation_reads WHERE conversation_id=? AND company_id=?').bind(c.id, auth.companyId).first();
+    const since = read?.last_read_at || '1970-01-01';
+    const unread = await env.DB.prepare('SELECT COUNT(*) c FROM messages WHERE conversation_id=? AND created_at>? AND sender_company_id!=?').bind(c.id, since, auth.companyId).first();
+    c.unread_count = unread.c;
+  }
+  return json(results);
+});
+
+router.get('/api/chat/conversations/:id/messages', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const convo = await env.DB.prepare('SELECT * FROM conversations WHERE id=?').bind(params.id).first();
+  if (!convo || (convo.company_a_id !== auth.companyId && convo.company_b_id !== auth.companyId)) return error('دسترسی ندارید', 403);
+  const { results } = await env.DB.prepare('SELECT * FROM messages WHERE conversation_id=? ORDER BY id ASC').bind(params.id).all();
+  await env.DB.prepare(
+    `INSERT INTO conversation_reads (conversation_id, company_id, last_read_at) VALUES (?,?,datetime('now'))
+     ON CONFLICT(conversation_id, company_id) DO UPDATE SET last_read_at=datetime('now')`
+  ).bind(params.id, auth.companyId).run();
+  return json(results);
+});
+
+router.post('/api/chat/conversations/:id/messages', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const convo = await env.DB.prepare('SELECT * FROM conversations WHERE id=?').bind(params.id).first();
+  if (!convo || (convo.company_a_id !== auth.companyId && convo.company_b_id !== auth.companyId)) return error('دسترسی ندارید', 403);
+  if (convo.status === 'closed_by_admin') return error('این گفتگو توسط مدیریت بسته شده است', 403);
+  const b = await readJson(request);
+  if (!b.body || !b.body.trim()) return error('متن پیام خالی است');
+  const res = await env.DB.prepare('INSERT INTO messages (conversation_id, sender_company_id, body) VALUES (?,?,?)')
+    .bind(params.id, auth.companyId, b.body.trim()).run();
+  await env.DB.prepare(`UPDATE conversations SET last_message_at=datetime('now') WHERE id=?`).bind(params.id).run();
+  const otherId = convo.company_a_id === auth.companyId ? convo.company_b_id : convo.company_a_id;
+  const me = await env.DB.prepare('SELECT name FROM companies WHERE id=?').bind(auth.companyId).first();
+  await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
+    .bind(otherId, 'message', `پیام جدید از ${me?.name || ''}`, b.body.trim().slice(0, 80), `#chat-${params.id}`).run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+
+router.post('/api/chat/messages/:id/report', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const msg = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(params.id).first();
+  if (!msg) return error('پیام یافت نشد', 404);
+  const b = await readJson(request);
+  await env.DB.prepare('INSERT INTO message_reports (message_id, conversation_id, reported_by_company_id, reason) VALUES (?,?,?,?)')
+    .bind(params.id, msg.conversation_id, auth.companyId, b.reason || '').run();
+  return json({ ok: true }, 201);
+});
+
+// ------------------------------------------------------------------
+// امتیاز و نظر بعد از معامله (بعد از تایید مدیر عمومی می‌شود)
+// ------------------------------------------------------------------
+router.post('/api/reviews', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای ثبت نظر ابتدا وارد شوید', 401);
+  const b = await readJson(request);
+  const targetId = parseInt(b.companyId);
+  const rating = parseInt(b.rating);
+  if (!targetId || !rating || rating < 1 || rating > 5) return error('انتخاب شرکت و امتیاز بین ۱ تا ۵ الزامی است');
+  if (targetId === auth.companyId) return error('نمی‌توانید برای شرکت خودتان نظر ثبت کنید');
+  await env.DB.prepare('INSERT INTO reviews (company_id, reviewer_company_id, rating, comment) VALUES (?,?,?,?)')
+    .bind(targetId, auth.companyId, rating, (b.comment || '').trim()).run();
+  return json({ ok: true, note: 'نظر شما بعد از تایید مدیریت نمایش داده می‌شود' }, 201);
+});
+
+router.get('/api/companies/:id/reviews', async ({ env, params }) => {
+  const { results } = await env.DB.prepare(
+    `SELECT r.id, r.rating, r.comment, r.created_at, c.name AS reviewer_name
+     FROM reviews r JOIN companies c ON c.id = r.reviewer_company_id
+     WHERE r.company_id=? AND r.status='approved' ORDER BY r.created_at DESC`
+  ).bind(params.id).all();
+  return json(results);
+});
+
+// ------------------------------------------------------------------
+// اعلان‌های داخل‌برنامه‌ای شرکت (زنگوله)
+// ------------------------------------------------------------------
+router.get('/api/company/notifications', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM notifications WHERE company_id=? ORDER BY id DESC LIMIT 50').bind(auth.companyId).all();
+  const unread = await env.DB.prepare('SELECT COUNT(*) c FROM notifications WHERE company_id=? AND is_read=0').bind(auth.companyId).first();
+  return json({ items: results, unread: unread.c });
+});
+router.post('/api/company/notifications/:id/read', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  await env.DB.prepare('UPDATE notifications SET is_read=1 WHERE id=? AND company_id=?').bind(params.id, auth.companyId).run();
+  return json({ ok: true });
+});
+router.post('/api/company/notifications/read-all', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  await env.DB.prepare('UPDATE notifications SET is_read=1 WHERE company_id=?').bind(auth.companyId).run();
+  return json({ ok: true });
+});
+
+// ------------------------------------------------------------------
+// تیکر آمار روزانهٔ صفحهٔ اصلی
+// ------------------------------------------------------------------
+router.get('/api/stats/ticker', async ({ env }) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const reqToday = await env.DB.prepare(`SELECT COUNT(*) c FROM purchase_requests WHERE created_at LIKE ?`).bind(today + '%').first();
+  const svcToday = await env.DB.prepare(`SELECT COUNT(*) c FROM service_requests WHERE created_at LIKE ?`).bind(today + '%').first();
+  const companiesTotal = await env.DB.prepare(`SELECT COUNT(*) c FROM companies WHERE active=1`).first();
+  return json({ requestsToday: (reqToday.c || 0) + (svcToday.c || 0), companiesTotal: companiesTotal.c || 0 });
 });
 
 // ------------------------------------------------------------------
@@ -662,6 +850,97 @@ router.del('/api/admin/service-requests/:id', async ({ request, env, params }) =
   return json({ ok: true });
 });
 
+// ------------------------------------------------------------------
+// مدیریت: نظارت بر چت‌ها، گزارش‌های تخلف، تایید نظرات، لاگ تطبیق هوشمند
+// ------------------------------------------------------------------
+router.get('/api/admin/conversations', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`
+    SELECT c.*, ca.name AS company_a_name, cb.name AS company_b_name,
+      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=c.id) AS message_count,
+      (SELECT COUNT(*) FROM message_reports mr WHERE mr.conversation_id=c.id AND mr.status='pending') AS pending_reports
+    FROM conversations c
+    JOIN companies ca ON ca.id=c.company_a_id
+    JOIN companies cb ON cb.id=c.company_b_id
+    ORDER BY COALESCE(c.last_message_at, c.created_at) DESC
+  `).all();
+  return json(results);
+});
+router.get('/api/admin/conversations/:id/messages', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`
+    SELECT m.*, c.name AS sender_name FROM messages m
+    JOIN companies c ON c.id = m.sender_company_id
+    WHERE m.conversation_id=? ORDER BY m.id ASC
+  `).bind(params.id).all();
+  return json(results);
+});
+router.post('/api/admin/conversations/:id/close', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare(`UPDATE conversations SET status='closed_by_admin' WHERE id=?`).bind(params.id).run();
+  return json({ ok: true });
+});
+router.post('/api/admin/conversations/:id/reopen', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare(`UPDATE conversations SET status='open' WHERE id=?`).bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/message-reports', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`
+    SELECT mr.*, m.body AS message_body, m.sender_company_id, c.name AS reported_by_name
+    FROM message_reports mr
+    JOIN messages m ON m.id = mr.message_id
+    JOIN companies c ON c.id = mr.reported_by_company_id
+    WHERE mr.status='pending' ORDER BY mr.created_at DESC
+  `).all();
+  return json(results);
+});
+router.post('/api/admin/message-reports/:id/resolve', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare(`UPDATE message_reports SET status='reviewed' WHERE id=?`).bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/reviews', async ({ request, env, url }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const status = (url.searchParams.get('status') || 'pending');
+  const { results } = await env.DB.prepare(`
+    SELECT r.*, c.name AS company_name, rc.name AS reviewer_name
+    FROM reviews r
+    JOIN companies c ON c.id = r.company_id
+    JOIN companies rc ON rc.id = r.reviewer_company_id
+    WHERE r.status=? ORDER BY r.created_at DESC
+  `).bind(status).all();
+  return json(results);
+});
+router.post('/api/admin/reviews/:id/approve', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const rev = await env.DB.prepare('SELECT * FROM reviews WHERE id=?').bind(params.id).first();
+  if (!rev) return error('نظر یافت نشد', 404);
+  await env.DB.prepare(`UPDATE reviews SET status='approved' WHERE id=?`).bind(params.id).run();
+  const agg = await env.DB.prepare(`SELECT AVG(rating) avg_r, COUNT(*) cnt FROM reviews WHERE company_id=? AND status='approved'`).bind(rev.company_id).first();
+  await env.DB.prepare('UPDATE companies SET rating_avg=?, rating_count=? WHERE id=?')
+    .bind(Math.round((agg.avg_r || 0) * 10) / 10, agg.cnt || 0, rev.company_id).run();
+  return json({ ok: true });
+});
+router.post('/api/admin/reviews/:id/reject', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare(`UPDATE reviews SET status='rejected' WHERE id=?`).bind(params.id).run();
+  return json({ ok: true });
+});
+
+router.get('/api/admin/notifications-log', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`
+    SELECT n.*, c.name AS company_name FROM notifications n
+    JOIN companies c ON c.id = n.company_id
+    WHERE n.type='match_request' ORDER BY n.created_at DESC LIMIT 200
+  `).all();
+  return json(results);
+});
+
 router.get('/api/admin/problems', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const { results } = await env.DB.prepare('SELECT * FROM problems ORDER BY created_at DESC').all();
@@ -743,7 +1022,8 @@ router.get('/api/admin/env-check', async ({ request, env }) => {
 // ------------------------------------------------------------------
 const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
   'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
-  'calculator_settings', 'contact_messages'];
+  'calculator_settings', 'contact_messages', 'industrial_zones', 'conversations', 'messages',
+  'conversation_reads', 'message_reports', 'reviews', 'notifications'];
 
 router.get('/api/admin/backup', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
