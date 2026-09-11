@@ -58,6 +58,14 @@ router.get('/api/industrial-zones', async ({ env }) => {
 // ------------------------------------------------------------------
 // عمومی: فهرست واحدهای تولیدی
 // ------------------------------------------------------------------
+router.get('/api/companies/map', async ({ env }) => {
+  const { results } = await env.DB.prepare(
+    `SELECT id, name, county, category, role, verified, latitude, longitude
+     FROM companies WHERE active=1 AND latitude IS NOT NULL AND longitude IS NOT NULL`
+  ).all();
+  return json(results);
+});
+
 router.get('/api/companies', async ({ env, url }) => {
   const q = url.searchParams.get('q') || '';
   const role = url.searchParams.get('role') || '';
@@ -591,6 +599,19 @@ router.get('/api/company/dashboard', async ({ request, env }) => {
   });
 });
 
+router.post('/api/company/change-password', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const b = await readJson(request);
+  if (!b.newPassword || b.newPassword.length < 4) return error('رمز جدید باید حداقل ۴ کاراکتر باشد');
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
+  if (!company) return error('حساب یافت نشد', 404);
+  if (!(await verifyPassword(b.currentPassword || '', company.password_hash))) return error('رمز فعلی درست نیست');
+  const pw = await hashPassword(b.newPassword);
+  await env.DB.prepare('UPDATE companies SET password_hash=? WHERE id=?').bind(pw, auth.companyId).run();
+  return json({ ok: true });
+});
+
 router.put('/api/company/profile', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('نیاز به ورود', 401);
@@ -882,6 +903,15 @@ router.put('/api/admin/companies/:id', async ({ request, env, params }) => {
   if (!setCols.length) return error('چیزی برای تغییر ارسال نشده');
   await env.DB.prepare(`UPDATE companies SET ${setCols.map(c => c + '=?').join(',')} WHERE id=?`)
     .bind(...setCols.map(c => b[c]), params.id).run();
+  return json({ ok: true });
+});
+
+router.post('/api/admin/companies/:id/reset-password', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.newPassword || b.newPassword.length < 4) return error('رمز جدید باید حداقل ۴ کاراکتر باشد');
+  const pw = await hashPassword(b.newPassword);
+  await env.DB.prepare('UPDATE companies SET password_hash=? WHERE id=?').bind(pw, params.id).run();
   return json({ ok: true });
 });
 
