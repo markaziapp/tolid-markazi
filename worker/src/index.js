@@ -137,6 +137,9 @@ router.post('/api/rfqs', async ({ request, env }) => {
   if (!company) return error('حساب یافت نشد', 404);
   const b = await readJson(request);
   if (!b.offerId) return error('آگهی مشخص نشده');
+  const offer = await env.DB.prepare('SELECT company_id FROM offers WHERE id=?').bind(b.offerId).first();
+  if (!offer) return error('آگهی یافت نشد', 404);
+  if (offer.company_id === company.id) return error('نمی‌توانید برای آگهی خودتان استعلام ثبت کنید');
   const res = await env.DB.prepare(
     `INSERT INTO rfqs (offer_id, company_id, company_name, person_name, phone, quantity, message) VALUES (?,?,?,?,?,?,?)`
   ).bind(b.offerId, company.id, company.name, company.name, company.phone, b.quantity || '', b.message || '').run();
@@ -198,6 +201,9 @@ router.post('/api/requests/:id/respond', async ({ request, env, params }) => {
   if (!auth) return error('برای اعلام آمادگی ابتدا باید ثبت‌نام یا وارد شوید', 401);
   const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
   if (!company) return error('حساب یافت نشد', 404);
+  const reqRow = await env.DB.prepare('SELECT company_id FROM purchase_requests WHERE id=?').bind(params.id).first();
+  if (!reqRow) return error('درخواست یافت نشد', 404);
+  if (reqRow.company_id === company.id) return error('نمی‌توانید برای درخواست خرید خودتان اعلام آمادگی کنید');
   await env.DB.prepare(
     `INSERT INTO request_responses (request_id, company_id, company_name, phone) VALUES (?,?,?,?)`
   ).bind(params.id, company.id, company.name, company.phone).run();
@@ -234,12 +240,24 @@ router.post('/api/service-requests', async ({ request, env }) => {
   return json({ id: res.meta.last_row_id }, 201);
 });
 
+// تنظیمات سراسری پلتفرم (فعلاً فقط چت)
+async function getPlatformSettings(env) {
+  const row = await env.DB.prepare('SELECT * FROM platform_settings WHERE id=1').first();
+  return row || { chat_enabled: 1, chat_auto_approve: 1 };
+}
+router.get('/api/platform-settings', async ({ env }) => {
+  const s = await getPlatformSettings(env);
+  return json({ chat_enabled: s.chat_enabled });
+});
+
 // ------------------------------------------------------------------
 // چت داخلی بین دو شرکت (خریدار/فروشنده) — بدون نیاز به واتس‌اپ
 // ------------------------------------------------------------------
 router.post('/api/chat/start', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('برای شروع گفتگو ابتدا وارد شوید', 401);
+  const settings = await getPlatformSettings(env);
+  if (!settings.chat_enabled) return error('گفتگوی داخلی پلتفرم موقتاً توسط مدیریت غیرفعال شده است', 403);
   const b = await readJson(request);
   const otherId = parseInt(b.companyId);
   if (!otherId || otherId === auth.companyId) return error('شرکت مقصد نامعتبر است');
@@ -249,8 +267,8 @@ router.post('/api/chat/start', async ({ request, env }) => {
   let convo = await env.DB.prepare('SELECT * FROM conversations WHERE company_a_id=? AND company_b_id=?').bind(a, bId).first();
   if (!convo) {
     const res = await env.DB.prepare(
-      `INSERT INTO conversations (company_a_id, company_b_id, related_type, related_id) VALUES (?,?,?,?)`
-    ).bind(a, bId, b.relatedType || null, b.relatedId || null).run();
+      `INSERT INTO conversations (company_a_id, company_b_id, related_type, related_id, initiator_company_id, approved) VALUES (?,?,?,?,?,?)`
+    ).bind(a, bId, b.relatedType || null, b.relatedId || null, auth.companyId, settings.chat_auto_approve ? 1 : 0).run();
     convo = { id: res.meta.last_row_id };
   }
   return json({ conversationId: convo.id });
@@ -259,12 +277,15 @@ router.post('/api/chat/start', async ({ request, env }) => {
 router.get('/api/chat/conversations', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
-  const { results } = await env.DB.prepare(`
+  const { results: raw } = await env.DB.prepare(`
     SELECT c.*, CASE WHEN c.company_a_id=? THEN c.company_b_id ELSE c.company_a_id END AS other_id
     FROM conversations c WHERE c.company_a_id=? OR c.company_b_id=?
     ORDER BY COALESCE(c.last_message_at, c.created_at) DESC
   `).bind(auth.companyId, auth.companyId, auth.companyId).all();
+  // اگر گفتگو هنوز تایید نشده، فقط شروع‌کننده آن را می‌بیند (با برچسب «در انتظار تایید»)
+  const results = raw.filter(c => c.approved || c.initiator_company_id === auth.companyId);
   for (const c of results) {
+    c.pending_approval = !c.approved;
     const other = await env.DB.prepare('SELECT id, name FROM companies WHERE id=?').bind(c.other_id).first();
     c.other_name = other?.name || 'کاربر حذف‌شده';
     const lastMsg = await env.DB.prepare('SELECT body FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1').bind(c.id).first();
@@ -282,6 +303,7 @@ router.get('/api/chat/conversations/:id/messages', async ({ request, env, params
   if (!auth) return error('ورود لازم است', 401);
   const convo = await env.DB.prepare('SELECT * FROM conversations WHERE id=?').bind(params.id).first();
   if (!convo || (convo.company_a_id !== auth.companyId && convo.company_b_id !== auth.companyId)) return error('دسترسی ندارید', 403);
+  if (!convo.approved && convo.initiator_company_id !== auth.companyId) return error('این گفتگو هنوز توسط مدیریت تایید نشده است', 403);
   const { results } = await env.DB.prepare('SELECT * FROM messages WHERE conversation_id=? ORDER BY id ASC').bind(params.id).all();
   await env.DB.prepare(
     `INSERT INTO conversation_reads (conversation_id, company_id, last_read_at) VALUES (?,?,datetime('now'))
@@ -293,18 +315,23 @@ router.get('/api/chat/conversations/:id/messages', async ({ request, env, params
 router.post('/api/chat/conversations/:id/messages', async ({ request, env, params }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
+  const settings = await getPlatformSettings(env);
+  if (!settings.chat_enabled) return error('گفتگوی داخلی پلتفرم موقتاً توسط مدیریت غیرفعال شده است', 403);
   const convo = await env.DB.prepare('SELECT * FROM conversations WHERE id=?').bind(params.id).first();
   if (!convo || (convo.company_a_id !== auth.companyId && convo.company_b_id !== auth.companyId)) return error('دسترسی ندارید', 403);
   if (convo.status === 'closed_by_admin') return error('این گفتگو توسط مدیریت بسته شده است', 403);
+  if (!convo.approved && convo.initiator_company_id !== auth.companyId) return error('این گفتگو هنوز توسط مدیریت تایید نشده است', 403);
   const b = await readJson(request);
   if (!b.body || !b.body.trim()) return error('متن پیام خالی است');
   const res = await env.DB.prepare('INSERT INTO messages (conversation_id, sender_company_id, body) VALUES (?,?,?)')
     .bind(params.id, auth.companyId, b.body.trim()).run();
   await env.DB.prepare(`UPDATE conversations SET last_message_at=datetime('now') WHERE id=?`).bind(params.id).run();
-  const otherId = convo.company_a_id === auth.companyId ? convo.company_b_id : convo.company_a_id;
-  const me = await env.DB.prepare('SELECT name FROM companies WHERE id=?').bind(auth.companyId).first();
-  await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
-    .bind(otherId, 'message', `پیام جدید از ${me?.name || ''}`, b.body.trim().slice(0, 80), `#chat-${params.id}`).run();
+  if (convo.approved) {
+    const otherId = convo.company_a_id === auth.companyId ? convo.company_b_id : convo.company_a_id;
+    const me = await env.DB.prepare('SELECT name FROM companies WHERE id=?').bind(auth.companyId).first();
+    await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
+      .bind(otherId, 'message', `پیام جدید از ${me?.name || ''}`, b.body.trim().slice(0, 80), `#chat-${params.id}`).run();
+  }
   return json({ id: res.meta.last_row_id }, 201);
 });
 
@@ -918,6 +945,31 @@ router.del('/api/admin/service-requests/:id', async ({ request, env, params }) =
 // ------------------------------------------------------------------
 // مدیریت: نظارت بر چت‌ها، گزارش‌های تخلف، تایید نظرات، لاگ تطبیق هوشمند
 // ------------------------------------------------------------------
+router.get('/api/admin/settings', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  return json(await getPlatformSettings(env));
+});
+router.put('/api/admin/settings', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  const fields = [], binds = [];
+  if (typeof b.chat_enabled !== 'undefined') { fields.push('chat_enabled=?'); binds.push(b.chat_enabled ? 1 : 0); }
+  if (typeof b.chat_auto_approve !== 'undefined') { fields.push('chat_auto_approve=?'); binds.push(b.chat_auto_approve ? 1 : 0); }
+  if (!fields.length) return error('چیزی برای تغییر مشخص نشده');
+  await env.DB.prepare(`UPDATE platform_settings SET ${fields.join(', ')}, updated_at=datetime('now') WHERE id=1`).bind(...binds).run();
+  return json({ ok: true });
+});
+router.post('/api/admin/conversations/:id/approve', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const convo = await env.DB.prepare('SELECT * FROM conversations WHERE id=?').bind(params.id).first();
+  if (!convo) return error('گفتگو یافت نشد', 404);
+  await env.DB.prepare('UPDATE conversations SET approved=1 WHERE id=?').bind(params.id).run();
+  const otherId = convo.company_a_id === convo.initiator_company_id ? convo.company_b_id : convo.company_a_id;
+  await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
+    .bind(otherId, 'message', 'گفتگوی جدید', 'یک گفتگوی جدید برای شما تایید و باز شد', `#chat-${convo.id}`).run();
+  return json({ ok: true });
+});
+
 router.get('/api/admin/conversations', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const { results } = await env.DB.prepare(`
@@ -1146,11 +1198,12 @@ router.get('/api/admin/notifications', async ({ request, env }) => {
   const pendingPresentations = await env.DB.prepare(`SELECT COUNT(*) c FROM companies WHERE presentation_status='pending'`).first();
   const pendingReviews = await env.DB.prepare(`SELECT COUNT(*) c FROM reviews WHERE status='pending'`).first();
   const pendingReports = await env.DB.prepare(`SELECT COUNT(*) c FROM message_reports WHERE status='pending'`).first();
+  const pendingConversations = await env.DB.prepare(`SELECT COUNT(*) c FROM conversations WHERE approved=0`).first();
   return json({
     pendingEdits: pendingEdits.c, unreadMessages: unreadMessages.c, pendingAds: pendingAds.c,
     unverifiedCompanies: unverifiedCompanies.c, pendingPresentations: pendingPresentations.c,
-    pendingReviews: pendingReviews.c, pendingReports: pendingReports.c,
-    total: pendingEdits.c + unreadMessages.c + pendingAds.c + pendingPresentations.c + pendingReviews.c + pendingReports.c,
+    pendingReviews: pendingReviews.c, pendingReports: pendingReports.c, pendingConversations: pendingConversations.c,
+    total: pendingEdits.c + unreadMessages.c + pendingAds.c + pendingPresentations.c + pendingReviews.c + pendingReports.c + pendingConversations.c,
   });
 });
 
