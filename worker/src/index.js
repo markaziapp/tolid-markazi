@@ -96,6 +96,7 @@ router.get('/api/offers', async ({ env, url }) => {
   const q = url.searchParams.get('q') || '';
   const county = url.searchParams.get('county') || '';
   const category = url.searchParams.get('category') || '';
+  const companyId = url.searchParams.get('companyId') || '';
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
   let sql = `SELECT o.*, c.name as company_name, c.verified as company_verified
              FROM offers o JOIN companies c ON c.id = o.company_id
@@ -104,6 +105,7 @@ router.get('/api/offers', async ({ env, url }) => {
   if (q) { sql += ` AND (o.title LIKE ? OR c.name LIKE ?)`; binds.push(`%${q}%`, `%${q}%`); }
   if (county) { sql += ` AND o.county = ?`; binds.push(county); }
   if (category) { sql += ` AND o.category = ?`; binds.push(category); }
+  if (companyId) { sql += ` AND o.company_id = ?`; binds.push(companyId); }
   sql += ` ORDER BY (o.featured_approved=1) DESC, o.created_at DESC LIMIT ?`;
   binds.push(limit);
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
