@@ -595,7 +595,7 @@ router.get('/api/company/dashboard', async ({ request, env }) => {
      WHERE path LIKE ('%/company/' || ? || '%') GROUP BY month ORDER BY month DESC LIMIT 6`
   ).bind(cid).all();
   return json({
-    company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_views', 'presentation_status', 'profile_completed', 'county', 'category', 'products', 'capacity', 'latitude', 'longitude', 'industrial_zone']),
+    company: pick(company, ['id', 'name', 'phone', 'role', 'verified', 'active', 'profile_views', 'presentation_status', 'profile_completed', 'county', 'category', 'products', 'capacity', 'latitude', 'longitude', 'industrial_zone', 'logo_url']),
     stats: { offers: offersCount.c, rfqs: rfqCount.c, responses: respCount.c, profileViews: company.profile_views, myRequests: myRequestsCount.c, myServices: myServiceCount.c },
     myOffers, myRequests, myServices, myRfqsSent, rfqsReceived, monthlyViews,
   });
