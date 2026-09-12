@@ -912,6 +912,31 @@ router.del('/api/admin/industrial-zones/:id', async ({ request, env, params }) =
   return json({ ok: true });
 });
 
+// ------------------------------------------------------------------
+// پیامک هدفمند از پنل مدیریت (به منتخب یا همهٔ ثبت‌نام‌کننده‌ها)
+// چون حساب سرویس پیامک وجود ندارد، ارسال واقعی از طریق اپ پیامک خودِ گوشیِ
+// مدیر انجام می‌شود (لینک sms:) — این endpoint فقط برای تاریخچه/سابقه ثبت می‌کند
+// ------------------------------------------------------------------
+router.post('/api/admin/sms/log', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  const company = await env.DB.prepare('SELECT id, phone FROM companies WHERE id=?').bind(b.companyId).first();
+  if (!company) return error('شرکت یافت نشد', 404);
+  await env.DB.prepare('INSERT INTO sms_log (company_id, phone, message, status) VALUES (?,?,?,?)')
+    .bind(company.id, company.phone, (b.message || '').trim(), 'composed_on_device').run();
+  return json({ ok: true }, 201);
+});
+
+router.get('/api/admin/sms/log', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`
+    SELECT s.*, c.name AS company_name FROM sms_log s
+    LEFT JOIN companies c ON c.id = s.company_id
+    ORDER BY s.id DESC LIMIT 200
+  `).all();
+  return json(results);
+});
+
 router.get('/api/admin/companies', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const { results } = await env.DB.prepare('SELECT * FROM companies ORDER BY created_at DESC').all();
@@ -1217,7 +1242,7 @@ router.get('/api/admin/env-check', async ({ request, env }) => {
 const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
   'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
   'calculator_settings', 'contact_messages', 'industrial_zones', 'conversations', 'messages',
-  'conversation_reads', 'message_reports', 'reviews', 'notifications'];
+  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log'];
 
 router.get('/api/admin/backup', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
