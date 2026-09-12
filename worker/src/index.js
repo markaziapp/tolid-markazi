@@ -913,6 +913,72 @@ router.del('/api/admin/industrial-zones/:id', async ({ request, env, params }) =
 });
 
 // ------------------------------------------------------------------
+// چت پشتیبانی: گفتگوی هر شرکت مستقیم با مدیریت پلتفرم
+// ------------------------------------------------------------------
+router.get('/api/support/thread', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  let thread = await env.DB.prepare('SELECT * FROM support_threads WHERE company_id=?').bind(auth.companyId).first();
+  if (!thread) {
+    const res = await env.DB.prepare('INSERT INTO support_threads (company_id) VALUES (?)').bind(auth.companyId).run();
+    thread = { id: res.meta.last_row_id, company_id: auth.companyId, status: 'open' };
+  }
+  const { results: messages } = await env.DB.prepare('SELECT * FROM support_messages WHERE thread_id=? ORDER BY id ASC').bind(thread.id).all();
+  await env.DB.prepare(`UPDATE support_threads SET last_read_by_company_at=datetime('now') WHERE id=?`).bind(thread.id).run();
+  return json({ thread, messages });
+});
+
+router.post('/api/support/messages', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const b = await readJson(request);
+  if (!b.body || !b.body.trim()) return error('متن پیام خالی است');
+  let thread = await env.DB.prepare('SELECT * FROM support_threads WHERE company_id=?').bind(auth.companyId).first();
+  if (!thread) {
+    const res = await env.DB.prepare('INSERT INTO support_threads (company_id) VALUES (?)').bind(auth.companyId).run();
+    thread = { id: res.meta.last_row_id };
+  }
+  await env.DB.prepare('INSERT INTO support_messages (thread_id, sender_type, body) VALUES (?,?,?)')
+    .bind(thread.id, 'company', b.body.trim()).run();
+  await env.DB.prepare(`UPDATE support_threads SET last_message_at=datetime('now'), status='open' WHERE id=?`).bind(thread.id).run();
+  return json({ ok: true }, 201);
+});
+
+router.get('/api/admin/support/threads', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`
+    SELECT t.*, c.name AS company_name, c.phone AS company_phone,
+      (SELECT body FROM support_messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) AS last_message,
+      (SELECT COUNT(*) FROM support_messages m WHERE m.thread_id=t.id AND m.sender_type='company'
+        AND (t.last_read_by_admin_at IS NULL OR m.created_at > t.last_read_by_admin_at)) AS unread_count
+    FROM support_threads t JOIN companies c ON c.id = t.company_id
+    ORDER BY COALESCE(t.last_message_at, t.created_at) DESC
+  `).all();
+  return json(results);
+});
+
+router.get('/api/admin/support/threads/:id/messages', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM support_messages WHERE thread_id=? ORDER BY id ASC').bind(params.id).all();
+  await env.DB.prepare(`UPDATE support_threads SET last_read_by_admin_at=datetime('now') WHERE id=?`).bind(params.id).run();
+  return json(results);
+});
+
+router.post('/api/admin/support/threads/:id/messages', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.body || !b.body.trim()) return error('متن پیام خالی است');
+  const thread = await env.DB.prepare('SELECT * FROM support_threads WHERE id=?').bind(params.id).first();
+  if (!thread) return error('گفتگو یافت نشد', 404);
+  await env.DB.prepare('INSERT INTO support_messages (thread_id, sender_type, body) VALUES (?,?,?)')
+    .bind(params.id, 'admin', b.body.trim()).run();
+  await env.DB.prepare(`UPDATE support_threads SET last_message_at=datetime('now') WHERE id=?`).bind(params.id).run();
+  await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
+    .bind(thread.company_id, 'message', 'پاسخ پشتیبانی', b.body.trim().slice(0, 80), '#support').run();
+  return json({ ok: true }, 201);
+});
+
+// ------------------------------------------------------------------
 // پیامک هدفمند از پنل مدیریت (به منتخب یا همهٔ ثبت‌نام‌کننده‌ها)
 // چون حساب سرویس پیامک وجود ندارد، ارسال واقعی از طریق اپ پیامک خودِ گوشیِ
 // مدیر انجام می‌شود (لینک sms:) — این endpoint فقط برای تاریخچه/سابقه ثبت می‌کند
@@ -1242,7 +1308,7 @@ router.get('/api/admin/env-check', async ({ request, env }) => {
 const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
   'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
   'calculator_settings', 'contact_messages', 'industrial_zones', 'conversations', 'messages',
-  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log'];
+  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages'];
 
 router.get('/api/admin/backup', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
@@ -1301,11 +1367,17 @@ router.get('/api/admin/notifications', async ({ request, env }) => {
   const pendingReviews = await env.DB.prepare(`SELECT COUNT(*) c FROM reviews WHERE status='pending'`).first();
   const pendingReports = await env.DB.prepare(`SELECT COUNT(*) c FROM message_reports WHERE status='pending'`).first();
   const pendingConversations = await env.DB.prepare(`SELECT COUNT(*) c FROM conversations WHERE approved=0`).first();
+  const pendingSupport = await env.DB.prepare(`
+    SELECT COUNT(*) c FROM support_threads t WHERE EXISTS (
+      SELECT 1 FROM support_messages m WHERE m.thread_id=t.id AND m.sender_type='company'
+        AND (t.last_read_by_admin_at IS NULL OR m.created_at > t.last_read_by_admin_at)
+    )`).first();
   return json({
     pendingEdits: pendingEdits.c, unreadMessages: unreadMessages.c, pendingAds: pendingAds.c,
     unverifiedCompanies: unverifiedCompanies.c, pendingPresentations: pendingPresentations.c,
     pendingReviews: pendingReviews.c, pendingReports: pendingReports.c, pendingConversations: pendingConversations.c,
-    total: pendingEdits.c + unreadMessages.c + pendingAds.c + pendingPresentations.c + pendingReviews.c + pendingReports.c + pendingConversations.c,
+    pendingSupport: pendingSupport.c,
+    total: pendingEdits.c + unreadMessages.c + pendingAds.c + pendingPresentations.c + pendingReviews.c + pendingReports.c + pendingConversations.c + pendingSupport.c,
   });
 });
 
