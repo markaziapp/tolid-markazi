@@ -23,7 +23,7 @@ async function requireCompany(request, env) {
 function clientIp(request) {
   return request.headers.get('CF-Connecting-IP') || '';
 }
-function computeBadges(c) {
+function computeBadges(c, responseTimes) {
   const badges = [];
   try {
     const created = new Date((c.created_at || '').replace(' ', 'T') + 'Z');
@@ -32,7 +32,32 @@ function computeBadges(c) {
   } catch {}
   if ((c.deals_count || 0) >= 5) badges.push(`${c.deals_count} معاملهٔ موفق`);
   if ((c.rating_count || 0) >= 3 && (c.rating_avg || 0) >= 4) badges.push('محبوب کاربران');
+  const rt = responseTimes && responseTimes[c.id];
+  if (rt && rt.reply_count >= 3 && rt.avg_minutes <= 120) badges.push('⚡ پاسخ‌گویی سریع');
   return badges;
+}
+
+// میانگین زمان پاسخ‌دهی هر شرکت در چت (بر حسب دقیقه)، برای نشان «پاسخ‌گویی سریع»
+async function getResponseTimes(env, onlyCompanyId) {
+  let sql = `
+    WITH ordered AS (
+      SELECT conversation_id, sender_company_id, created_at,
+             LAG(sender_company_id) OVER (PARTITION BY conversation_id ORDER BY id) AS prev_sender,
+             LAG(created_at) OVER (PARTITION BY conversation_id ORDER BY id) AS prev_time
+      FROM messages
+    )
+    SELECT sender_company_id AS company_id,
+           AVG((julianday(created_at) - julianday(prev_time)) * 24 * 60) AS avg_minutes,
+           COUNT(*) AS reply_count
+    FROM ordered
+    WHERE prev_sender IS NOT NULL AND prev_sender != sender_company_id`;
+  const binds = [];
+  if (onlyCompanyId) { sql += ' AND sender_company_id = ?'; binds.push(onlyCompanyId); }
+  sql += ' GROUP BY sender_company_id';
+  const { results } = await env.DB.prepare(sql).bind(...binds).all();
+  const map = {};
+  results.forEach(r => { map[r.company_id] = r; });
+  return map;
 }
 
 // ------------------------------------------------------------------
@@ -76,7 +101,8 @@ router.get('/api/companies', async ({ env, url }) => {
   if (role) { sql += ` AND role = ?`; binds.push(role); }
   sql += ` ORDER BY verified DESC, created_at DESC LIMIT 100`;
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
-  results.forEach(c => { c.badges = computeBadges(c); });
+  const responseTimes = await getResponseTimes(env);
+  results.forEach(c => { c.badges = computeBadges(c, responseTimes); });
   return json(results);
 });
 
@@ -85,7 +111,8 @@ router.get('/api/companies/:id', async ({ env, params }) => {
   if (!c) return error('یافت نشد', 404);
   await env.DB.prepare('UPDATE companies SET profile_views = profile_views + 1 WHERE id=?').bind(params.id).run();
   delete c.password_hash;
-  c.badges = computeBadges(c);
+  const responseTimes = await getResponseTimes(env, c.id);
+  c.badges = computeBadges(c, responseTimes);
   return json(c);
 });
 
@@ -384,6 +411,24 @@ router.get('/api/companies/:id/reviews', async ({ env, params }) => {
 // ------------------------------------------------------------------
 // اعلان‌های داخل‌برنامه‌ای شرکت (زنگوله)
 // ------------------------------------------------------------------
+router.get('/api/company/weekly-digest', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const views = await env.DB.prepare(`SELECT COUNT(*) c FROM page_views WHERE path=? AND created_at>=?`)
+    .bind(`/company/${auth.companyId}`, since).first();
+  const newMessages = await env.DB.prepare(`
+    SELECT COUNT(*) c FROM messages m JOIN conversations cv ON cv.id = m.conversation_id
+    WHERE (cv.company_a_id=? OR cv.company_b_id=?) AND m.sender_company_id != ? AND m.created_at >= ?
+  `).bind(auth.companyId, auth.companyId, auth.companyId, since).first();
+  const newRfqs = await env.DB.prepare(`
+    SELECT COUNT(*) c FROM rfqs r JOIN offers o ON o.id = r.offer_id WHERE o.company_id=? AND r.created_at>=?
+  `).bind(auth.companyId, since).first();
+  const newMatches = await env.DB.prepare(`SELECT COUNT(*) c FROM notifications WHERE company_id=? AND type='match_request' AND created_at>=?`)
+    .bind(auth.companyId, since).first();
+  return json({ views: views.c, newMessages: newMessages.c, newRfqs: newRfqs.c, newMatches: newMatches.c });
+});
+
 router.get('/api/company/inbox', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
