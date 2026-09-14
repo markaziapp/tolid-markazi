@@ -124,6 +124,7 @@ router.get('/api/offers', async ({ env, url }) => {
   const county = url.searchParams.get('county') || '';
   const category = url.searchParams.get('category') || '';
   const companyId = url.searchParams.get('companyId') || '';
+  const featuredOnly = url.searchParams.get('featured') === '1';
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
   let sql = `SELECT o.*, c.name as company_name, c.verified as company_verified
              FROM offers o JOIN companies c ON c.id = o.company_id
@@ -133,10 +134,30 @@ router.get('/api/offers', async ({ env, url }) => {
   if (county) { sql += ` AND o.county = ?`; binds.push(county); }
   if (category) { sql += ` AND o.category = ?`; binds.push(category); }
   if (companyId) { sql += ` AND o.company_id = ?`; binds.push(companyId); }
+  if (featuredOnly) { sql += ` AND o.featured_approved = 1`; }
   sql += ` ORDER BY (o.featured_approved=1) DESC, o.created_at DESC LIMIT ?`;
   binds.push(limit);
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
   return json(results);
+});
+
+router.get('/api/offers/top-weekly', async ({ env }) => {
+  const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const { results } = await env.DB.prepare(`
+    SELECT path, COUNT(*) AS views FROM page_views
+    WHERE path LIKE '/offer/%' AND created_at >= ?
+    GROUP BY path ORDER BY views DESC LIMIT 6
+  `).bind(since).all();
+  const offers = [];
+  for (const r of results) {
+    const id = r.path.replace('/offer/', '');
+    const o = await env.DB.prepare(`
+      SELECT o.*, c.name AS company_name, c.verified AS company_verified
+      FROM offers o JOIN companies c ON c.id = o.company_id WHERE o.id=? AND o.active=1
+    `).bind(id).first();
+    if (o) { o.weekly_views = r.views; offers.push(o); }
+  }
+  return json(offers);
 });
 
 router.get('/api/offers/:id', async ({ env, params }) => {
@@ -560,6 +581,12 @@ router.post('/api/track', async ({ request, env }) => {
 // پنل کارخانه: ورود / پروفایل / داشبورد / ویرایش (در انتظار تایید)
 // ------------------------------------------------------------------
 const VALID_ROLES = ['producer', 'service', 'buyer', 'other'];
+function genReferralCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
 router.post('/api/company/register', async ({ request, env }) => {
   const b = await readJson(request);
   if (!b.name || !b.phone || !b.password || !b.role) return error('نام، شماره تماس، رمز عبور و نوع فعالیت الزامی است');
@@ -567,19 +594,30 @@ router.post('/api/company/register', async ({ request, env }) => {
   const exists = await env.DB.prepare('SELECT id FROM companies WHERE phone=?').bind(b.phone).first();
   if (exists) return error('این شماره قبلاً ثبت شده؛ از فرم ورود استفاده کنید', 409);
   const pw = await hashPassword(b.password);
+  const myReferralCode = genReferralCode();
   // موقعیت (نقشه یا شهرک صنعتی انتخاب‌شده) همین‌جا مستقیم ثبت می‌شود؛ چون بخشی از
   // اطلاعات اولیهٔ خودِ کاربر است، نیازی به تایید مدیر برای اعمال‌شدن ندارد
   const res = await env.DB.prepare(
-    `INSERT INTO companies (name, phone, password_hash, role, province, county, latitude, longitude, industrial_zone, profile_completed)
-     VALUES (?,?,?,?,?,?,?,?,?,0)`
+    `INSERT INTO companies (name, phone, password_hash, role, province, county, latitude, longitude, industrial_zone, profile_completed, referral_code, referred_by_code)
+     VALUES (?,?,?,?,?,?,?,?,?,0,?,?)`
   ).bind(
     b.name, b.phone, pw, b.role, 'مرکزی', b.county || '',
     (typeof b.latitude === 'number') ? b.latitude : null,
     (typeof b.longitude === 'number') ? b.longitude : null,
-    b.industrialZone || null
+    b.industrialZone || null, myReferralCode, b.refCode || null
   ).run();
   const token = await signToken({ role: 'company', companyId: res.meta.last_row_id }, env.JWT_SECRET);
   return json({ id: res.meta.last_row_id, token, message: 'ثبت‌نام شما انجام شد.' }, 201);
+});
+
+router.get('/api/company/referrals', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const me = await env.DB.prepare('SELECT referral_code FROM companies WHERE id=?').bind(auth.companyId).first();
+  if (!me) return error('حساب یافت نشد', 404);
+  const { results } = await env.DB.prepare('SELECT name, created_at FROM companies WHERE referred_by_code=? ORDER BY created_at DESC')
+    .bind(me.referral_code).all();
+  return json({ referralCode: me.referral_code, count: results.length, referred: results });
 });
 
 // نمایش سریع نام کاربر برای بالای صفحه (بدون بار سنگین داشبورد کامل)
@@ -915,6 +953,40 @@ router.del('/api/admin/industrial-zones/:id', async ({ request, env, params }) =
 // ------------------------------------------------------------------
 // چت پشتیبانی: گفتگوی هر شرکت مستقیم با مدیریت پلتفرم
 // ------------------------------------------------------------------
+// ------------------------------------------------------------------
+// تقویم رویدادهای صنعتی استان
+// ------------------------------------------------------------------
+router.get('/api/events', async ({ env }) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const { results } = await env.DB.prepare('SELECT * FROM events WHERE event_date >= ? ORDER BY event_date ASC').bind(today).all();
+  return json(results);
+});
+router.get('/api/admin/events', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM events ORDER BY event_date DESC').all();
+  return json(results);
+});
+router.post('/api/admin/events', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.title || !b.eventDate) return error('عنوان و تاریخ رویداد الزامی است');
+  const res = await env.DB.prepare('INSERT INTO events (title, event_date, location, description, link) VALUES (?,?,?,?,?)')
+    .bind(b.title, b.eventDate, b.location || '', b.description || '', b.link || '').run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+router.put('/api/admin/events/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  await env.DB.prepare('UPDATE events SET title=?, event_date=?, location=?, description=?, link=? WHERE id=?')
+    .bind(b.title, b.eventDate, b.location || '', b.description || '', b.link || '', params.id).run();
+  return json({ ok: true });
+});
+router.del('/api/admin/events/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM events WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
 router.get('/api/support/thread', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
@@ -1308,7 +1380,7 @@ router.get('/api/admin/env-check', async ({ request, env }) => {
 const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
   'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
   'calculator_settings', 'contact_messages', 'industrial_zones', 'conversations', 'messages',
-  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages'];
+  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events'];
 
 router.get('/api/admin/backup', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
