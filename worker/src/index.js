@@ -344,8 +344,10 @@ router.get('/api/chat/conversations', async ({ request, env }) => {
   const results = raw.filter(c => c.approved || c.initiator_company_id === auth.companyId);
   for (const c of results) {
     c.pending_approval = !c.approved;
-    const other = await env.DB.prepare('SELECT id, name FROM companies WHERE id=?').bind(c.other_id).first();
+    const other = await env.DB.prepare('SELECT id, name, phone, county FROM companies WHERE id=?').bind(c.other_id).first();
     c.other_name = other?.name || 'کاربر حذف‌شده';
+    c.other_phone = other?.phone || '';
+    c.other_county = other?.county || '';
     const lastMsg = await env.DB.prepare('SELECT body FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1').bind(c.id).first();
     c.last_message = lastMsg?.body || '';
     const read = await env.DB.prepare('SELECT last_read_at FROM conversation_reads WHERE conversation_id=? AND company_id=?').bind(c.id, auth.companyId).first();
@@ -987,6 +989,42 @@ router.del('/api/admin/events/:id', async ({ request, env, params }) => {
   return json({ ok: true });
 });
 
+// ------------------------------------------------------------------
+// علاقه‌مندی‌ها (⭐ نشان‌کردن آگهی یا شرکت)
+// ------------------------------------------------------------------
+router.post('/api/favorites/toggle', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const b = await readJson(request);
+  if (!b.targetType || !b.targetId) return error('اطلاعات ناقص است');
+  const existing = await env.DB.prepare('SELECT id FROM favorites WHERE company_id=? AND target_type=? AND target_id=?')
+    .bind(auth.companyId, b.targetType, b.targetId).first();
+  if (existing) {
+    await env.DB.prepare('DELETE FROM favorites WHERE id=?').bind(existing.id).run();
+    return json({ favorited: false });
+  }
+  await env.DB.prepare('INSERT INTO favorites (company_id, target_type, target_id) VALUES (?,?,?)')
+    .bind(auth.companyId, b.targetType, b.targetId).run();
+  return json({ favorited: true }, 201);
+});
+
+router.get('/api/favorites', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const { results: favs } = await env.DB.prepare('SELECT * FROM favorites WHERE company_id=? ORDER BY id DESC').bind(auth.companyId).all();
+  const items = [];
+  for (const f of favs) {
+    if (f.target_type === 'offer') {
+      const o = await env.DB.prepare(`SELECT o.*, c.name AS company_name FROM offers o JOIN companies c ON c.id=o.company_id WHERE o.id=?`).bind(f.target_id).first();
+      if (o) items.push({ type: 'offer', data: o });
+    } else if (f.target_type === 'company') {
+      const c = await env.DB.prepare('SELECT id, name, county, category, products, verified FROM companies WHERE id=?').bind(f.target_id).first();
+      if (c) items.push({ type: 'company', data: c });
+    }
+  }
+  return json(items);
+});
+
 router.get('/api/support/thread', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
@@ -1380,7 +1418,7 @@ router.get('/api/admin/env-check', async ({ request, env }) => {
 const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
   'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
   'calculator_settings', 'contact_messages', 'industrial_zones', 'conversations', 'messages',
-  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events'];
+  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events', 'favorites'];
 
 router.get('/api/admin/backup', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
