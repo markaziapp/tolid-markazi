@@ -7,6 +7,9 @@
     "deploy": "wrangler deploy",
     "db:init": "wrangler d1 execute tolid-markazi-db --file=../schema/schema.sql --remote"
   },
+  "dependencies": {
+    "@pushforge/builder": "*"
+  },
   "devDependencies": {
     "wrangler": "^3.78.0"
   }
