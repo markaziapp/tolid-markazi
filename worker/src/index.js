@@ -742,12 +742,29 @@ router.put('/api/company/profile', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('نیاز به ورود', 401);
   const b = await readJson(request);
-  const changes = pick(b, ['name', 'county', 'category', 'products', 'capacity', 'logo_url', 'license_url', 'latitude', 'longitude', 'industrial_zone']);
-  await env.DB.prepare(
-    `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('company', ?, ?, ?)`
-  ).bind(auth.companyId, auth.companyId, JSON.stringify(changes)).run();
+
+  // موقعیت مکانی (شهرستان، مختصات، شهرک صنعتی) بلافاصله اعمال می‌شود — نیازی به تایید مدیر ندارد،
+  // چون داده‌ای عینی دربارهٔ خودِ کارخانه است، نه ادعایی که نیاز به بررسی داشته باشد
+  const locationFields = pick(b, ['county', 'latitude', 'longitude', 'industrial_zone']);
+  if (Object.keys(locationFields).length) {
+    const setCols = Object.keys(locationFields);
+    await env.DB.prepare(`UPDATE companies SET ${setCols.map(c => c + '=?').join(',')} WHERE id=?`)
+      .bind(...setCols.map(c => locationFields[c]), auth.companyId).run();
+  }
+
+  const changes = pick(b, ['name', 'category', 'products', 'capacity', 'logo_url', 'license_url']);
+  if (Object.keys(changes).length) {
+    await env.DB.prepare(
+      `INSERT INTO pending_edits (entity_type, entity_id, company_id, changes_json) VALUES ('company', ?, ?, ?)`
+    ).bind(auth.companyId, auth.companyId, JSON.stringify(changes)).run();
+  }
   await env.DB.prepare(`UPDATE companies SET profile_completed=1 WHERE id=?`).bind(auth.companyId).run();
-  return json({ ok: true, message: 'تغییرات ثبت شد و پس از تایید مدیر اعمال می‌شود.' }, 201);
+  return json({
+    ok: true,
+    message: Object.keys(changes).length
+      ? 'موقعیت مکانی بلافاصله ثبت شد؛ بقیهٔ تغییرات پس از تایید مدیر اعمال می‌شود.'
+      : 'موقعیت مکانی با موفقیت ثبت شد.',
+  }, 201);
 });
 
 router.put('/api/company/offers/:id', async ({ request, env, params }) => {
