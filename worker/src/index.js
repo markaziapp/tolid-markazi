@@ -83,6 +83,17 @@ router.get('/api/industrial-zones', async ({ env }) => {
 // ------------------------------------------------------------------
 // عمومی: فهرست واحدهای تولیدی
 // ------------------------------------------------------------------
+router.get('/sitemap.xml', async ({ env }) => {
+  const SITE = 'https://markaziapp.github.io/tolid-markazi-site';
+  const today = new Date().toISOString().slice(0, 10);
+  const staticPages = ['', '/company.html'];
+  const { results: companies } = await env.DB.prepare('SELECT id FROM companies WHERE active=1 AND verified=1').all();
+  let urls = staticPages.map(p => `<url><loc>${SITE}${p}</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq></url>`);
+  urls = urls.concat(companies.map(c => `<url><loc>${SITE}/company-profile.html?id=${c.id}</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq></url>`));
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>`;
+  return new Response(xml, { headers: { 'Content-Type': 'application/xml; charset=utf-8' } });
+});
+
 router.get('/api/companies/map', async ({ env }) => {
   const { results } = await env.DB.prepare(
     `SELECT id, name, county, category, role, verified, latitude, longitude
