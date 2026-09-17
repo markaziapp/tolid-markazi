@@ -2,6 +2,7 @@ import { Router } from './router.js';
 import { json, error, readJson, randomKey, pick } from './utils.js';
 import { hashPassword, verifyPassword, signToken, verifyToken, getBearerToken, tooManyAttempts, recordAttempt } from './auth.js';
 import { uploadToGithub } from './githubStorage.js';
+import { buildPushHTTPRequest } from '@pushforge/builder';
 
 const router = new Router();
 
@@ -215,8 +216,37 @@ router.post('/api/rfqs', async ({ request, env }) => {
   return json({ id: res.meta.last_row_id }, 201);
 });
 
-// تطبیق هوشمند: وقتی درخواستی ثبت می‌شود، به شرکت‌های مرتبط همان شهرستان اعلان داخلی می‌فرستد
-// نکته: فقط اعلان داخل‌برنامه‌ای می‌سازد؛ ارسال پیامک واقعی هنوز وصل نشده (نیاز به اطلاعات سرویس پیامک شما دارد)
+// ارسال پوش واقعی (Web Push) به همهٔ دستگاه‌های ثبت‌شدهٔ یک شرکت
+// اگر VAPID_PRIVATE_KEY تنظیم نشده باشد یا هیچ دستگاهی ثبت نکرده باشد، بی‌سروصدا رد می‌شود
+async function sendPushToCompany(env, companyId, { title, body, link }) {
+  if (!env.VAPID_PRIVATE_KEY) return;
+  try {
+    const { results: subs } = await env.DB.prepare('SELECT * FROM push_subscriptions WHERE company_id=?').bind(companyId).all();
+    const privateJWK = JSON.parse(env.VAPID_PRIVATE_KEY);
+    for (const sub of subs) {
+      try {
+        const { endpoint, headers, body: reqBody } = await buildPushHTTPRequest({
+          privateJWK,
+          subscription: { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          message: { payload: { title, body: body || '', link: link || '/' }, adminContact: 'mailto:support@hamtasanat.ir' },
+        });
+        const res = await fetch(endpoint, { method: 'POST', headers, body: reqBody });
+        if (res.status === 404 || res.status === 410) {
+          await env.DB.prepare('DELETE FROM push_subscriptions WHERE id=?').bind(sub.id).run();
+        }
+      } catch (e) { /* یک دستگاه شکست خورد؛ ادامه بده برای بقیه */ }
+    }
+  } catch (e) { /* پوش هیچ‌وقت نباید کل درخواست را خراب کند */ }
+}
+
+// اعلان داخل‌برنامه‌ای + پوش واقعی با هم — نقطهٔ واحد برای همهٔ اعلان‌ها
+async function notifyCompany(env, companyId, { type, title, body, link }) {
+  await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
+    .bind(companyId, type, title, body || '', link || '').run();
+  await sendPushToCompany(env, companyId, { title, body, link });
+}
+
+// تطبیق هوشمند: وقتی درخواستی ثبت می‌شود، به شرکت‌های مرتبط همان شهرستان اعلان می‌فرستد (داخلی + پوش واقعی)
 async function notifyMatchingCompanies(env, { role, county, title, body, link, excludeCompanyId }) {
   let sql = `SELECT id FROM companies WHERE active=1 AND role=?`;
   const binds = [role];
@@ -224,8 +254,7 @@ async function notifyMatchingCompanies(env, { role, county, title, body, link, e
   const { results } = await env.DB.prepare(sql).bind(...binds).all();
   for (const c of results) {
     if (excludeCompanyId && c.id === excludeCompanyId) continue;
-    await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
-      .bind(c.id, 'match_request', title, body || '', link || '').run();
+    await notifyCompany(env, c.id, { type: 'match_request', title, body, link });
   }
   return results.length;
 }
@@ -400,8 +429,7 @@ router.post('/api/chat/conversations/:id/messages', async ({ request, env, param
   if (convo.approved) {
     const otherId = convo.company_a_id === auth.companyId ? convo.company_b_id : convo.company_a_id;
     const me = await env.DB.prepare('SELECT name FROM companies WHERE id=?').bind(auth.companyId).first();
-    await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
-      .bind(otherId, 'message', `پیام جدید از ${me?.name || ''}`, b.body.trim().slice(0, 80), `#chat-${params.id}`).run();
+    await notifyCompany(env, otherId, { type: 'message', title: `پیام جدید از ${me?.name || ''}`, body: b.body.trim().slice(0, 80), link: `#chat-${params.id}` });
   }
   return json({ id: res.meta.last_row_id }, 201);
 });
@@ -1015,8 +1043,7 @@ router.post('/api/tenders/:id/bids', async ({ request, env, params }) => {
   await env.DB.prepare('INSERT INTO tender_bids (tender_id, company_id, price, message) VALUES (?,?,?,?)')
     .bind(params.id, auth.companyId, b.price, b.message || '').run();
   const me = await env.DB.prepare('SELECT name FROM companies WHERE id=?').bind(auth.companyId).first();
-  await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
-    .bind(tender.company_id, 'message', 'پیشنهاد جدید برای مناقصه', `${me?.name || ''} برای «${tender.title}» پیشنهاد داد`, '#tenders').run();
+  await notifyCompany(env, tender.company_id, { type: 'message', title: 'پیشنهاد جدید برای مناقصه', body: `${me?.name || ''} برای «${tender.title}» پیشنهاد داد`, link: '#tenders' });
   return json({ ok: true }, 201);
 });
 router.get('/api/company/my-tenders', async ({ request, env }) => {
@@ -1140,6 +1167,84 @@ router.get('/api/favorites', async ({ request, env }) => {
   return json(items);
 });
 
+// ------------------------------------------------------------------
+// آگهی استخدام
+// ------------------------------------------------------------------
+router.get('/api/jobs', async ({ env }) => {
+  const { results } = await env.DB.prepare(`
+    SELECT j.*, c.name AS company_name FROM job_postings j
+    JOIN companies c ON c.id=j.company_id WHERE j.active=1 ORDER BY j.created_at DESC
+  `).all();
+  return json(results);
+});
+router.post('/api/jobs', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای ثبت آگهی استخدام ابتدا وارد شوید', 401);
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
+  const b = await readJson(request);
+  if (!b.title) return error('عنوان شغل الزامی است');
+  const res = await env.DB.prepare(
+    `INSERT INTO job_postings (company_id, title, description, category, county, salary_range, contact_phone) VALUES (?,?,?,?,?,?,?)`
+  ).bind(auth.companyId, b.title, b.description || '', b.category || '', b.county || company.county || '', b.salaryRange || '', b.contactPhone || company.phone).run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+router.get('/api/company/my-jobs', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM job_postings WHERE company_id=? ORDER BY created_at DESC').bind(auth.companyId).all();
+  return json(results);
+});
+router.del('/api/company/jobs/:id', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const job = await env.DB.prepare('SELECT * FROM job_postings WHERE id=?').bind(params.id).first();
+  if (!job || job.company_id !== auth.companyId) return error('دسترسی ندارید', 403);
+  await env.DB.prepare('DELETE FROM job_postings WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+router.get('/api/admin/jobs', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`SELECT j.*, c.name AS company_name FROM job_postings j JOIN companies c ON c.id=j.company_id ORDER BY j.created_at DESC`).all();
+  return json(results);
+});
+router.del('/api/admin/jobs/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM job_postings WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+// ------------------------------------------------------------------
+// اعلان‌های فوری واقعی (Web Push) — حتی وقتی سایت بسته است
+// ------------------------------------------------------------------
+router.post('/api/push/subscribe', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const b = await readJson(request);
+  if (!b.endpoint || !b.keys?.p256dh || !b.keys?.auth) return error('اطلاعات اشتراک نامعتبر است');
+  await env.DB.prepare(
+    `INSERT INTO push_subscriptions (company_id, endpoint, p256dh, auth) VALUES (?,?,?,?)
+     ON CONFLICT(endpoint) DO UPDATE SET company_id=excluded.company_id`
+  ).bind(auth.companyId, b.endpoint, b.keys.p256dh, b.keys.auth).run();
+  return json({ ok: true }, 201);
+});
+router.post('/api/push/unsubscribe', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const b = await readJson(request);
+  await env.DB.prepare('DELETE FROM push_subscriptions WHERE company_id=? AND endpoint=?').bind(auth.companyId, b.endpoint || '').run();
+  return json({ ok: true });
+});
+router.post('/api/admin/push/test', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.companyId) return error('شرکت مشخص نشده');
+  if (!env.VAPID_PRIVATE_KEY) return error('کلید VAPID هنوز در تنظیمات Cloudflare ثبت نشده است');
+  const count = await env.DB.prepare('SELECT COUNT(*) c FROM push_subscriptions WHERE company_id=?').bind(b.companyId).first();
+  if (!count.c) return error('این شرکت هیچ دستگاهی برای دریافت پوش ثبت نکرده است');
+  await sendPushToCompany(env, b.companyId, { title: 'پیام آزمایشی', body: 'اگر این را دیدید، پوش واقعی درست کار می‌کند ✅', link: '/' });
+  return json({ ok: true, deviceCount: count.c });
+});
+
 router.get('/api/support/thread', async ({ request, env }) => {
   const auth = await requireCompany(request, env);
   if (!auth) return error('ورود لازم است', 401);
@@ -1198,8 +1303,7 @@ router.post('/api/admin/support/threads/:id/messages', async ({ request, env, pa
   await env.DB.prepare('INSERT INTO support_messages (thread_id, sender_type, body) VALUES (?,?,?)')
     .bind(params.id, 'admin', b.body.trim()).run();
   await env.DB.prepare(`UPDATE support_threads SET last_message_at=datetime('now') WHERE id=?`).bind(params.id).run();
-  await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
-    .bind(thread.company_id, 'message', 'پاسخ پشتیبانی', b.body.trim().slice(0, 80), '#support').run();
+  await notifyCompany(env, thread.company_id, { type: 'message', title: 'پاسخ پشتیبانی', body: b.body.trim().slice(0, 80), link: '#support' });
   return json({ ok: true }, 201);
 });
 
@@ -1533,7 +1637,7 @@ router.get('/api/admin/env-check', async ({ request, env }) => {
 const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
   'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
   'calculator_settings', 'contact_messages', 'industrial_zones', 'conversations', 'messages',
-  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events', 'favorites', 'tenders', 'tender_bids', 'news'];
+  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events', 'favorites', 'tenders', 'tender_bids', 'news', 'push_subscriptions', 'job_postings'];
 
 router.get('/api/admin/backup', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
