@@ -969,6 +969,110 @@ router.del('/api/admin/industrial-zones/:id', async ({ request, env, params }) =
 // ------------------------------------------------------------------
 // تقویم رویدادهای صنعتی استان
 // ------------------------------------------------------------------
+// ------------------------------------------------------------------
+// مناقصه / درخواست تأمین بزرگ
+// ------------------------------------------------------------------
+router.get('/api/tenders', async ({ env }) => {
+  const { results } = await env.DB.prepare(`
+    SELECT t.*, c.name AS company_name,
+      (SELECT COUNT(*) FROM tender_bids b WHERE b.tender_id=t.id) AS bid_count
+    FROM tenders t JOIN companies c ON c.id=t.company_id
+    WHERE t.active=1 AND t.status='open' ORDER BY t.created_at DESC
+  `).all();
+  return json(results);
+});
+router.post('/api/tenders', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای ثبت مناقصه ابتدا وارد شوید', 401);
+  const company = await env.DB.prepare('SELECT * FROM companies WHERE id=?').bind(auth.companyId).first();
+  const b = await readJson(request);
+  if (!b.title || !b.deadline) return error('عنوان و مهلت مناقصه الزامی است');
+  const res = await env.DB.prepare(
+    `INSERT INTO tenders (company_id, title, description, category, county, budget_range, deadline) VALUES (?,?,?,?,?,?,?)`
+  ).bind(auth.companyId, b.title, b.description || '', b.category || '', b.county || company.county || '', b.budgetRange || '', b.deadline).run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+router.get('/api/tenders/:id/bids', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const tender = await env.DB.prepare('SELECT * FROM tenders WHERE id=?').bind(params.id).first();
+  if (!tender) return error('مناقصه یافت نشد', 404);
+  if (tender.company_id !== auth.companyId) return error('فقط ثبت‌کنندهٔ مناقصه می‌تواند پیشنهادها را ببیند', 403);
+  const { results } = await env.DB.prepare(`
+    SELECT b.*, c.name AS company_name, c.phone AS company_phone FROM tender_bids b
+    JOIN companies c ON c.id=b.company_id WHERE b.tender_id=? ORDER BY b.created_at ASC
+  `).bind(params.id).all();
+  return json(results);
+});
+router.post('/api/tenders/:id/bids', async ({ request, env, params }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('برای ثبت پیشنهاد ابتدا وارد شوید', 401);
+  const tender = await env.DB.prepare('SELECT * FROM tenders WHERE id=?').bind(params.id).first();
+  if (!tender) return error('مناقصه یافت نشد', 404);
+  if (tender.company_id === auth.companyId) return error('نمی‌توانید برای مناقصهٔ خودتان پیشنهاد ثبت کنید');
+  const b = await readJson(request);
+  if (!b.price) return error('مبلغ پیشنهادی الزامی است');
+  await env.DB.prepare('INSERT INTO tender_bids (tender_id, company_id, price, message) VALUES (?,?,?,?)')
+    .bind(params.id, auth.companyId, b.price, b.message || '').run();
+  const me = await env.DB.prepare('SELECT name FROM companies WHERE id=?').bind(auth.companyId).first();
+  await env.DB.prepare('INSERT INTO notifications (company_id, type, title, body, link) VALUES (?,?,?,?,?)')
+    .bind(tender.company_id, 'message', 'پیشنهاد جدید برای مناقصه', `${me?.name || ''} برای «${tender.title}» پیشنهاد داد`, '#tenders').run();
+  return json({ ok: true }, 201);
+});
+router.get('/api/company/my-tenders', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const { results } = await env.DB.prepare(`
+    SELECT t.*, (SELECT COUNT(*) FROM tender_bids b WHERE b.tender_id=t.id) AS bid_count
+    FROM tenders t WHERE t.company_id=? ORDER BY t.created_at DESC
+  `).bind(auth.companyId).all();
+  return json(results);
+});
+router.get('/api/admin/tenders', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare(`SELECT t.*, c.name AS company_name FROM tenders t JOIN companies c ON c.id=t.company_id ORDER BY t.created_at DESC`).all();
+  return json(results);
+});
+router.del('/api/admin/tenders/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM tender_bids WHERE tender_id=?').bind(params.id).run();
+  await env.DB.prepare('DELETE FROM tenders WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
+// ------------------------------------------------------------------
+// اخبار و مقالات صنعتی
+// ------------------------------------------------------------------
+router.get('/api/news', async ({ env }) => {
+  const { results } = await env.DB.prepare('SELECT * FROM news WHERE published=1 ORDER BY created_at DESC LIMIT 30').all();
+  return json(results);
+});
+router.get('/api/admin/news', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM news ORDER BY created_at DESC').all();
+  return json(results);
+});
+router.post('/api/admin/news', async ({ request, env }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.title || !b.body) return error('عنوان و متن الزامی است');
+  const res = await env.DB.prepare('INSERT INTO news (title, body, image_url, published) VALUES (?,?,?,?)')
+    .bind(b.title, b.body, b.imageUrl || '', b.published !== false ? 1 : 0).run();
+  return json({ id: res.meta.last_row_id }, 201);
+});
+router.put('/api/admin/news/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  await env.DB.prepare('UPDATE news SET title=?, body=?, image_url=?, published=? WHERE id=?')
+    .bind(b.title, b.body, b.imageUrl || '', b.published ? 1 : 0, params.id).run();
+  return json({ ok: true });
+});
+router.del('/api/admin/news/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM news WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+
 router.get('/api/events', async ({ env }) => {
   const today = new Date().toISOString().slice(0, 10);
   const { results } = await env.DB.prepare('SELECT * FROM events WHERE event_date >= ? ORDER BY event_date ASC').bind(today).all();
@@ -1429,7 +1533,7 @@ router.get('/api/admin/env-check', async ({ request, env }) => {
 const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
   'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
   'calculator_settings', 'contact_messages', 'industrial_zones', 'conversations', 'messages',
-  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events', 'favorites'];
+  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events', 'favorites', 'tenders', 'tender_bids', 'news'];
 
 router.get('/api/admin/backup', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
