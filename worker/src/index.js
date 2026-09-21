@@ -532,12 +532,34 @@ router.get('/api/problems', async ({ env }) => {
 router.post('/api/problems', async ({ request, env }) => {
   const b = await readJson(request);
   if (!b.title || !b.phone) return error('عنوان و شماره تماس الزامی است');
+  // اگر کاربر واردشده باشد، مشکل به حسابش وصل می‌شود تا بتواند بعداً پیگیری‌اش کند
+  const auth = await requireCompany(request, env);
   const res = await env.DB.prepare(
-    `INSERT INTO problems (title, description, category, province, county, urgency, company, phone)
-     VALUES (?,?,?,?,?,?,?,?)`
+    `INSERT INTO problems (title, description, category, province, county, urgency, company, phone, company_id)
+     VALUES (?,?,?,?,?,?,?,?,?)`
   ).bind(b.title, b.description || '', b.category || '', b.province || 'مرکزی', b.county || '',
-         b.urgency || 'معمولی', b.company || '', b.phone).run();
+         b.urgency || 'معمولی', b.company || '', b.phone, auth?.companyId || null).run();
   return json({ id: res.meta.last_row_id }, 201);
+});
+
+router.get('/api/company/my-problems', async ({ request, env }) => {
+  const auth = await requireCompany(request, env);
+  if (!auth) return error('ورود لازم است', 401);
+  const { results } = await env.DB.prepare('SELECT * FROM problems WHERE company_id=? ORDER BY created_at DESC').bind(auth.companyId).all();
+  for (const p of results) {
+    const { results: res } = await env.DB.prepare('SELECT * FROM resolutions WHERE problem_id=? ORDER BY created_at ASC').bind(p.id).all();
+    p.resolutions = res;
+  }
+  return json(results);
+});
+
+// شفافیت عمومی: آمار کلی پیگیری مشکلات — بدون افشای اطلاعات هیچ شرکتی
+router.get('/api/stats/resolutions', async ({ env }) => {
+  const total = await env.DB.prepare(`SELECT COUNT(*) c FROM problems`).first();
+  const visited = await env.DB.prepare(`SELECT COUNT(*) c FROM problems WHERE status IN ('بازدید شد','دارای مصوبه','بسته شده')`).first();
+  const resolved = await env.DB.prepare(`SELECT COUNT(*) c FROM problems WHERE status='بسته شده'`).first();
+  const activeResolutions = await env.DB.prepare(`SELECT COUNT(*) c FROM resolutions WHERE status='در حال اجرا'`).first();
+  return json({ total: total.c, visited: visited.c, resolved: resolved.c, activeResolutions: activeResolutions.c });
 });
 
 // ------------------------------------------------------------------
@@ -1575,11 +1597,70 @@ router.get('/api/admin/notifications-log', async ({ request, env }) => {
 router.get('/api/admin/problems', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
   const { results } = await env.DB.prepare('SELECT * FROM problems ORDER BY created_at DESC').all();
+  for (const p of results) {
+    const { results: res } = await env.DB.prepare('SELECT * FROM resolutions WHERE problem_id=? ORDER BY created_at ASC').bind(p.id).all();
+    p.resolutions = res;
+  }
   return json(results);
 });
 router.del('/api/admin/problems/:id', async ({ request, env, params }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  await env.DB.prepare('DELETE FROM resolutions WHERE problem_id=?').bind(params.id).run();
   await env.DB.prepare('DELETE FROM problems WHERE id=?').bind(params.id).run();
+  return json({ ok: true });
+});
+router.put('/api/admin/problems/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  const p = await env.DB.prepare('SELECT * FROM problems WHERE id=?').bind(params.id).first();
+  if (!p) return error('یافت نشد', 404);
+  const fields = [], binds = [];
+  if (b.status) { fields.push('status=?'); binds.push(b.status); }
+  if (typeof b.visitDate !== 'undefined') { fields.push('visit_date=?'); binds.push(b.visitDate); }
+  if (fields.length) {
+    binds.push(params.id);
+    await env.DB.prepare(`UPDATE problems SET ${fields.join(',')} WHERE id=?`).bind(...binds).run();
+  }
+  if (p.company_id && b.status) {
+    await notifyCompany(env, p.company_id, {
+      type: 'message', title: 'به‌روزرسانی وضعیت مشکل شما',
+      body: `«${p.title}» اکنون در وضعیت «${b.status}» است`, link: '#problems',
+    });
+  }
+  return json({ ok: true });
+});
+router.post('/api/admin/problems/:id/resolutions', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  if (!b.title) return error('عنوان مصوبه الزامی است');
+  const p = await env.DB.prepare('SELECT * FROM problems WHERE id=?').bind(params.id).first();
+  if (!p) return error('مشکل یافت نشد', 404);
+  await env.DB.prepare('INSERT INTO resolutions (problem_id, title, responsible_org, deadline, notes) VALUES (?,?,?,?,?)')
+    .bind(params.id, b.title, b.responsibleOrg || '', b.deadline || '', b.notes || '').run();
+  await env.DB.prepare(`UPDATE problems SET status='دارای مصوبه' WHERE id=?`).bind(params.id).run();
+  if (p.company_id) {
+    await notifyCompany(env, p.company_id, {
+      type: 'message', title: 'مصوبهٔ جدید برای مشکل شما',
+      body: b.title, link: '#problems',
+    });
+  }
+  return json({ ok: true }, 201);
+});
+router.put('/api/admin/resolutions/:id', async ({ request, env, params }) => {
+  if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
+  const b = await readJson(request);
+  await env.DB.prepare(`UPDATE resolutions SET status=?, notes=?, updated_at=datetime('now') WHERE id=?`)
+    .bind(b.status || 'در حال اجرا', b.notes || '', params.id).run();
+  const res = await env.DB.prepare('SELECT * FROM resolutions WHERE id=?').bind(params.id).first();
+  if (res) {
+    const p = await env.DB.prepare('SELECT * FROM problems WHERE id=?').bind(res.problem_id).first();
+    if (p?.company_id) {
+      await notifyCompany(env, p.company_id, {
+        type: 'message', title: 'به‌روزرسانی پیگیری مصوبه',
+        body: `«${res.title}» اکنون: ${b.status}`, link: '#problems',
+      });
+    }
+  }
   return json({ ok: true });
 });
 
@@ -1654,7 +1735,7 @@ router.get('/api/admin/env-check', async ({ request, env }) => {
 const BACKUP_TABLES = ['provinces', 'counties', 'categories', 'companies', 'offers', 'purchase_requests',
   'request_responses', 'rfqs', 'service_requests', 'problems', 'ads', 'pending_edits', 'admin_files',
   'calculator_settings', 'contact_messages', 'industrial_zones', 'conversations', 'messages',
-  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events', 'favorites', 'tenders', 'tender_bids', 'news', 'push_subscriptions', 'job_postings'];
+  'conversation_reads', 'message_reports', 'reviews', 'notifications', 'sms_log', 'support_threads', 'support_messages', 'events', 'favorites', 'tenders', 'tender_bids', 'news', 'push_subscriptions', 'job_postings', 'resolutions'];
 
 router.get('/api/admin/backup', async ({ request, env }) => {
   if (!(await requireAdmin(request, env))) return error('دسترسی غیرمجاز', 401);
