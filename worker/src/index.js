@@ -3,8 +3,12 @@ import { json, error, readJson, randomKey, pick } from './utils.js';
 import { hashPassword, verifyPassword, signToken, verifyToken, getBearerToken, tooManyAttempts, recordAttempt } from './auth.js';
 import { uploadToGithub } from './githubStorage.js';
 import { buildPushHTTPRequest } from '@pushforge/builder';
+import { registerCorrRoutes } from './corr.js';
 
 const router = new Router();
+
+// ماژول «دستیار اداری» — پیش از بقیهٔ مسیرها ثبت می‌شود (مسیرهای /api/corr ، /api/company/corr ، /api/admin/corr ، /api/office)
+registerCorrRoutes(router, { requireAdmin, requireCompany, notifyCompany, clientIp });
 
 // ------------------------------------------------------------------
 // میان‌افزارهای احراز هویت
