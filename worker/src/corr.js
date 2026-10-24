@@ -828,6 +828,25 @@ export function registerCorrRoutes(router, { requireAdmin, requireCompany, notif
     }
     return json({ ok: true, message: 'بازیابی امور اداری انجام شد.' });
   });
+  // تست سلامت توکن گیت‌هاب (برای آپلود فایل‌ها): معتبر؟ منقضی؟ دسترسی نوشتن دارد؟
+  router.get('/api/admin/corr/github-check', async ({ request, env }) => {
+    if (!(await requireAdmin(request, env))) return deny();
+    const owner = env.GITHUB_OWNER, repo = env.GITHUB_UPLOADS_REPO, token = env.GITHUB_TOKEN;
+    if (!owner || !repo || !token) return json({ ok: false, message: 'یکی از تنظیمات GITHUB_TOKEN / GITHUB_OWNER / GITHUB_UPLOADS_REPO تنظیم نشده است.' });
+    let res;
+    try {
+      res = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'hamtasanat-worker' },
+      });
+    } catch (e) { return json({ ok: false, message: 'ارتباط با GitHub برقرار نشد: ' + String(e && e.message || e) }); }
+    const expires = res.headers.get('github-authentication-token-expiration') || null;
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) return json({ ok: false, status: 401, expires, message: 'توکن نامعتبر یا منقضی شده است (Bad credentials). یک توکن جدید بسازید و در Cloudflare جایگزین GITHUB_TOKEN کنید.' });
+    if (res.status === 404) return json({ ok: false, status: 404, expires, message: `ریپوی ${owner}/${repo} پیدا نشد یا این توکن به آن دسترسی ندارد (نام ریپو و دسترسی توکن را بررسی کنید).` });
+    if (!res.ok) return json({ ok: false, status: res.status, expires, message: `GitHub پاسخ ${res.status} داد.` });
+    if (data.permissions && data.permissions.push === false) return json({ ok: false, status: 200, expires, message: 'توکن معتبر است ولی فقط دسترسی «خواندن» دارد؛ باید Contents: Read and write باشد.' });
+    return json({ ok: true, status: 200, expires, message: 'توکن معتبر است و آپلود باید کار کند.' });
+  });
   // حذف درخواست‌ها/اشتراک‌های آزمایشی (ادارات، خدمات، طرح‌ها و تنظیمات می‌مانند)
   router.post('/api/admin/corr/wipe-requests', async ({ request, env }) => {
     if (!(await requireAdmin(request, env))) return deny();
